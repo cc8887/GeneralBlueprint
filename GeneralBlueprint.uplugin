@@ -1,0 +1,29 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "GeneralBlueprint",
+  "Description": "A modular Unreal Editor suite for Blueprint, Animation Blueprint, and Material graph DSL workflows and automatic layout.",
+  "Category": "Editor",
+  "CreatedBy": "cc8887",
+  "CreatedByURL": "https://github.com/cc8887",
+  "SupportURL": "https://github.com/cc8887",
+  "CanContainContent": true,
+  "IsBetaVersion": true,
+  "IsExperimentalVersion": false,
+  "Installed": false,
+  "Modules": [
+    { "Name": "BlueprintLisp", "Type": "Editor", "LoadingPhase": "Default" },
+    { "Name": "AnimBP2FP", "Type": "Editor", "LoadingPhase": "Default" },
+    { "Name": "AnimBP2FPEditor", "Type": "Editor", "LoadingPhase": "Default" },
+    { "Name": "MatBP2FP", "Type": "Runtime", "LoadingPhase": "PreDefault" },
+    { "Name": "MatBP2FPEditor", "Type": "Editor", "LoadingPhase": "Default" },
+    { "Name": "BlueprintAutoLayout", "Type": "Editor", "LoadingPhase": "PostEngineInit" },
+    { "Name": "DrivenHighlight", "Type": "Runtime", "LoadingPhase": "PreDefault" },
+    { "Name": "DrivenHighlightEditor", "Type": "Editor", "LoadingPhase": "PostEngineInit" },
+    { "Name": "BlueprintAutoLayoutTests", "Type": "Editor", "LoadingPhase": "Default" }
+  ],
+  "Plugins": [
+    { "Name": "ControlRig", "Enabled": true }
+  ]
+}

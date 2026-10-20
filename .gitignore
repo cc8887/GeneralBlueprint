@@ -1,0 +1,13 @@
+Binaries/
+Intermediate/
+Saved/
+DerivedDataCache/
+Artifacts/
+Releases/
+.buildwork/
+Dev/
+Docs/Fab/
+.vs/
+*.sln
+*.suo
+*.user

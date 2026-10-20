@@ -1,0 +1,70 @@
+// MatBP2FPRoundTripCommandlet.cpp
+// Copyright (c) 2026 cc8887. All Rights Reserved.
+
+#include "MatBP2FPRoundTripCommandlet.h"
+#include "MatBP2FPVersionCompat.h"
+#include "MatLangRoundTrip.h"
+#include "FMatBP2FPMappingRegistry.h"
+#include "Materials/Material.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+
+UMatBP2FPRoundTripCommandlet::UMatBP2FPRoundTripCommandlet()
+{
+	IsClient = false;
+	IsServer = false;
+	IsEditor = true;
+	LogToConsole = true;
+}
+
+int32 UMatBP2FPRoundTripCommandlet::Main(const FString& Params)
+{
+	UE_LOG(LogTemp, Log, TEXT("=== MatBP2FP Round-Trip Validation ==="));
+	
+	FAssetRegistryModule& ARModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AR = ARModule.Get();
+	AR.SearchAllAssets(true);
+	
+	TArray<FAssetData> MaterialAssets;
+	AR.GetAssetsByClass(MATBP2FP_ASSET_CLASS(UMaterial), MaterialAssets, true);
+	
+	int32 Passed = 0;
+	int32 Total = 0;
+	
+	for (const FAssetData& Asset : MaterialAssets)
+	{
+		if (!FMatBP2FPMappingRegistry::IsExportablePackage(Asset.PackageName.ToString()))
+		{
+			continue;
+		}
+		
+		UMaterial* Mat = Cast<UMaterial>(Asset.GetAsset());
+		if (!Mat) continue;
+		
+		Total++;
+		auto Result = FMatLangRoundTrip::Validate(Mat);
+		
+		if (Result.bPassed)
+		{
+			Passed++;
+			UE_LOG(LogTemp, Log, TEXT("  [PASS] %s: %d lines"), *Result.MaterialName, Result.TotalLines);
+		}
+		else
+		{
+			FString FidelityStr = FString::Printf(TEXT("%.1f"), Result.Fidelity * 100.0f);
+			UE_LOG(LogTemp, Warning, TEXT("  [FAIL] %s: %s pct fidelity (%d/%d lines differ)"),
+				*Result.MaterialName, *FidelityStr, Result.DiffLines, Result.TotalLines);
+			for (const FString& Diff : Result.Diffs)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("      %s"), *Diff);
+			}
+		}
+	}
+	
+	UE_LOG(LogTemp, Log, TEXT("\n=== Results: %d/%d PASS ==="), Passed, Total);
+	if (Total == 0)
+	{
+		UE_LOG(LogTemp, Error, TEXT("No exportable materials were found"));
+		return 1;
+	}
+	return (Passed == Total) ? 0 : 1;
+}

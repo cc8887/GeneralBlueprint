@@ -1,0 +1,870 @@
+// MatLangPatcher.cpp - Incremental Patch System for MatLang DSL
+// Copyright (c) 2026 cc8887. All Rights Reserved.
+
+#include "MatLangPatcher.h"
+#include "MatBP2FPVersionCompat.h"
+#include "MatBPExporter.h"
+#include "MatBPImporter.h"
+#include "MatLangParser.h"
+#include "MatLangLinter.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogMatLangPatcher, Log, All);
+
+#if WITH_EDITOR
+
+#include "Materials/Material.h"
+#include "Materials/MaterialExpression.h"
+#include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionConstant2Vector.h"
+#include "Materials/MaterialExpressionConstant3Vector.h"
+#include "Materials/MaterialExpressionConstant4Vector.h"
+#include "Materials/MaterialExpressionComment.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionStaticSwitchParameter.h"
+#include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionTextureObjectParameter.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "Materials/MaterialExpressionComponentMask.h"
+#include "Materials/MaterialExpressionPanner.h"
+#include "Materials/MaterialExpressionFresnel.h"
+#include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#if MATBP2FP_HAS_NAMED_REROUTES
+#include "Materials/MaterialExpressionNamedReroute.h"
+#endif
+#include "Materials/MaterialExpressionIf.h"
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 2)
+#include "MaterialDomain.h"
+#endif
+
+// ========== Public API ==========
+
+FMatLangPatchResult FMatLangPatcher::Apply(
+	UMaterial* Material,
+	const FMatLangDiffResult& DiffResult,
+	const TSharedPtr<FMaterialGraphAST>& NewAST)
+{
+	if (!Material || !NewAST)
+	{
+		FMatLangPatchResult Res;
+		Res.bSuccess = false;
+		Res.Messages.Add(TEXT("Null material or AST"));
+		return Res;
+	}
+	if (!DiffResult.CanApplyIncrementally())
+	{
+		FMatLangPatchResult Res;
+		Res.bSuccess = false;
+		Res.Messages.Add(DiffResult.bHasAmbiguousChanges
+			? TEXT("Ambiguous expression matches require a full rebuild")
+			: DiffResult.HasUnsupportedIncrementalChanges()
+				? TEXT("Property removals require a full rebuild")
+				: TEXT("Structural changes require a full rebuild"));
+		return Res;
+	}
+
+	const FMatLangLintResult LintResult = FMatLangLinter::LintAST(NewAST);
+	if (LintResult.HasErrors())
+	{
+		FMatLangPatchResult Res;
+		for (const FMatLangDiagnostic& Diagnostic : LintResult.Diagnostics)
+		{
+			Res.Messages.Add(Diagnostic.ToString());
+		}
+		return Res;
+	}
+
+	FMatLangPatcher Patcher(Material, NewAST, DiffResult.MatchResult);
+	TArray<FString> FunctionCallMessages;
+	if (!FMatBPImporter::NormalizeAndValidateMaterialGraph(Material, FunctionCallMessages))
+	{
+		Patcher.Result.bSuccess = false;
+		Patcher.Result.NumFailed += FunctionCallMessages.Num();
+		Patcher.Result.Messages.Append(FunctionCallMessages);
+		return Patcher.Result;
+	}
+	Patcher.BuildExpressionMap();
+
+	for (const FMatLangDiffEntry& Entry : DiffResult.Entries)
+	{
+		Patcher.ApplyEntry(Entry);
+	}
+
+	FunctionCallMessages.Reset();
+	if (!FMatBPImporter::NormalizeAndValidateMaterialGraph(Material, FunctionCallMessages))
+	{
+		Patcher.Result.NumFailed += FunctionCallMessages.Num();
+		Patcher.Result.Messages.Append(FunctionCallMessages);
+		Patcher.Result.bSuccess = false;
+		return Patcher.Result;
+	}
+
+	Patcher.RecompileMaterial();
+	FunctionCallMessages.Reset();
+	if (!FMatBPImporter::NormalizeAndValidateMaterialGraph(Material, FunctionCallMessages))
+	{
+		Patcher.Result.NumFailed += FMath::Max(1, FunctionCallMessages.Num());
+		Patcher.Result.Messages.Append(FunctionCallMessages);
+	}
+
+	if (Patcher.Result.NumFailed == 0)
+	{
+		const TSharedPtr<FMaterialGraphAST> PatchedAST = FMatBPExporter::ExportToAST(Material);
+		if (!PatchedAST)
+		{
+			Patcher.Warn(TEXT("Patch verification failed: could not export the patched material"));
+			Patcher.Result.NumFailed++;
+		}
+		else
+		{
+			const FMatLangDiffResult ResidualDiff = FMatLangDiffer::Diff(PatchedAST, NewAST);
+			if (ResidualDiff.NumStructural > 0 || ResidualDiff.NumProperty > 0)
+			{
+				Patcher.Warn(FString::Printf(TEXT("Patch verification failed: %s"),
+					*ResidualDiff.GetSummary()));
+				const int32 DetailCount = FMath::Min(ResidualDiff.Entries.Num(), 8);
+				for (int32 Index = 0; Index < DetailCount; ++Index)
+				{
+					Patcher.Warn(FString::Printf(TEXT("Residual change: %s"),
+						*ResidualDiff.Entries[Index].ToString()));
+				}
+				Patcher.Result.NumFailed++;
+			}
+		}
+	}
+	Patcher.Result.bSuccess = (Patcher.Result.NumFailed == 0);
+
+	Patcher.Info(FString::Printf(TEXT("Patch complete: %d applied, %d skipped, %d failed"),
+		Patcher.Result.NumApplied, Patcher.Result.NumSkipped, Patcher.Result.NumFailed));
+
+	return Patcher.Result;
+}
+
+FMatLangPatchResult FMatLangPatcher::IncrementalUpdate(
+	UMaterial* Material,
+	const FString& NewDSL,
+	FMatLangDiffResult* OutDiffResult)
+{
+	FMatLangPatchResult PatchResult;
+
+	if (!Material)
+	{
+		PatchResult.bSuccess = false;
+		PatchResult.Messages.Add(TEXT("Null material"));
+		return PatchResult;
+	}
+
+	// Step 1: Export current material to OldAST
+	TSharedPtr<FMaterialGraphAST> OldAST = FMatBPExporter::ExportToAST(Material);
+	if (!OldAST)
+	{
+		PatchResult.bSuccess = false;
+		PatchResult.Messages.Add(TEXT("Failed to export current material to AST"));
+		return PatchResult;
+	}
+
+	// Step 2: Parse new DSL to NewAST
+	FMatLangLintResult LintResult = FMatLangLinter::Lint(NewDSL);
+	if (LintResult.HasErrors() || !LintResult.AST.IsValid())
+	{
+		for (const FMatLangDiagnostic& Diagnostic : LintResult.Diagnostics)
+		{
+			PatchResult.Messages.Add(Diagnostic.ToString());
+		}
+		return PatchResult;
+	}
+	TSharedPtr<FMaterialGraphAST> NewAST = LintResult.AST;
+
+	// Step 3: Diff
+	FMatLangDiffResult DiffResult = FMatLangDiffer::Diff(OldAST, NewAST, false);
+
+	if (OutDiffResult)
+	{
+		*OutDiffResult = DiffResult;
+	}
+
+	UE_LOG(LogMatLangPatcher, Log, TEXT("IncrementalUpdate: %s"), *DiffResult.GetSummary());
+
+	// Step 4: Check if patchable
+	if (!DiffResult.CanApplyIncrementally())
+	{
+		PatchResult.bSuccess = false;
+		PatchResult.Messages.Add(DiffResult.bHasAmbiguousChanges
+			? TEXT("Ambiguous expression matches detected, incremental patch not possible")
+			: DiffResult.HasUnsupportedIncrementalChanges()
+				? TEXT("Property removals require a full rebuild")
+				: FString::Printf(TEXT("Structural changes detected (%d), incremental patch not possible"),
+					DiffResult.NumStructural));
+		return PatchResult;
+	}
+
+	if (DiffResult.IsEmpty())
+	{
+		PatchResult.bSuccess = FMatBPImporter::NormalizeAndValidateMaterialGraph(
+			Material, PatchResult.Messages);
+		if (!PatchResult.bSuccess)
+		{
+			PatchResult.NumFailed += PatchResult.Messages.Num();
+		}
+		PatchResult.Messages.Add(TEXT("No changes detected"));
+		return PatchResult;
+	}
+
+	// Step 5: Apply patch
+	return Apply(Material, DiffResult, NewAST);
+}
+
+// ========== Internal ==========
+
+FMatLangPatcher::FMatLangPatcher(
+	UMaterial* InMaterial,
+	const TSharedPtr<FMaterialGraphAST>& InNewAST,
+	const FMatLangMatchResult& InMatchResult)
+	: Material(InMaterial)
+	, NewAST(InNewAST)
+	, MatchResult(InMatchResult)
+{
+}
+
+void FMatLangPatcher::BuildExpressionMap()
+{
+	OldIdToExpr.Empty();
+	NewIdToExpr.Empty();
+
+	// We need to map $id to UMaterialExpression*
+	// Strategy: Export current material to get the ExprToId mapping,
+	// then invert it. The Exporter's ExportToAST gives us the AST with IDs
+	// that should match the current expressions.
+	//
+	// Simpler approach: use the Desc field or expression index.
+	// Best approach: re-export and match by ID.
+
+	TSharedPtr<FMaterialGraphAST> CurrentAST = FMatBPExporter::ExportToAST(Material);
+	if (!CurrentAST) return;
+
+	// Build expression array indexed the same way as export
+	TArray<UMaterialExpression*> AllExprs;
+	for (UMaterialExpression* Expr : MatBP2FPCompat::GetMaterialExpressions(Material))
+	{
+		if (Expr && !Expr->IsA<UMaterialExpressionComment>())
+		{
+			AllExprs.Add(Expr);
+		}
+	}
+
+	// The exporter assigns IDs in expression iteration order
+	// Match by index
+	for (int32 i = 0; i < CurrentAST->Expressions.Num() && i < AllExprs.Num(); ++i)
+	{
+		OldIdToExpr.Add(CurrentAST->Expressions[i]->Id, AllExprs[i]);
+	}
+	for (const FMatLangExpressionMatch& Match : MatchResult.ExpressionMatches)
+	{
+		if (UMaterialExpression* const* Expression = OldIdToExpr.Find(Match.OldExprId))
+		{
+			NewIdToExpr.Add(Match.NewExprId, *Expression);
+		}
+	}
+
+	UE_LOG(LogMatLangPatcher, Log, TEXT("Built expression maps: %d old ids, %d new ids"),
+		OldIdToExpr.Num(), NewIdToExpr.Num());
+}
+
+void FMatLangPatcher::ApplyEntry(const FMatLangDiffEntry& Entry)
+{
+	// Skip structural changes — they should have been caught upstream
+	if (Entry.Severity == EMatLangDiffSeverity::Structural)
+	{
+		Warn(FString::Printf(TEXT("Skipping structural change: %s"), *Entry.ToString()));
+		Result.NumSkipped++;
+		return;
+	}
+
+	// Skip cosmetic changes (editor position, comments) — optional, apply anyway
+	// Cosmetic changes are still applied but won't cause recompile issues
+
+	switch (Entry.Op)
+	{
+		case EMatLangDiffOp::MaterialPropertyChanged:
+			ApplyMaterialProperty(Entry);
+			break;
+
+		case EMatLangDiffOp::ExprPropertyChanged:
+		case EMatLangDiffOp::ExprPropertyAdded:
+		case EMatLangDiffOp::ExprPropertyRemoved:
+			ApplyExpressionProperty(Entry);
+			break;
+
+		case EMatLangDiffOp::ExprInputChanged:
+		case EMatLangDiffOp::ExprInputAdded:
+		case EMatLangDiffOp::ExprInputRemoved:
+			ApplyExpressionInput(Entry);
+			break;
+
+		case EMatLangDiffOp::OutputChanged:
+		case EMatLangDiffOp::OutputAdded:
+		case EMatLangDiffOp::OutputRemoved:
+			ApplyOutputChange(Entry);
+			break;
+
+		default:
+			Warn(FString::Printf(TEXT("Unhandled diff op: %s"), *Entry.ToString()));
+			Result.NumSkipped++;
+			break;
+	}
+}
+
+// ---- Material Property ----
+
+void FMatLangPatcher::ApplyMaterialProperty(const FMatLangDiffEntry& Entry)
+{
+	if (Entry.Key == TEXT("blend-mode"))
+	{
+		Material->BlendMode = (EBlendMode)(int32)MatLangEnums::StringToBlendMode(Entry.NewValue);
+		Result.NumApplied++;
+	}
+	else if (Entry.Key == TEXT("shading-model"))
+	{
+		Material->SetShadingModel(
+			(EMaterialShadingModel)(int32)MatLangEnums::StringToShadingModel(Entry.NewValue));
+		Result.NumApplied++;
+	}
+	else if (Entry.Key == TEXT("two-sided"))
+	{
+		Material->TwoSided = Entry.NewValue == TEXT("true");
+		Result.NumApplied++;
+	}
+	else if (Entry.Key == TEXT("is-masked"))
+	{
+		// bIsMasked is derived from blend mode, not a direct property
+		Result.NumSkipped++;
+	}
+	else if (Entry.Key == TEXT("opacity-mask-clip-value"))
+	{
+		Material->OpacityMaskClipValue = FCString::Atof(*Entry.NewValue);
+		Result.NumApplied++;
+	}
+	else if (Entry.Key == TEXT("domain"))
+	{
+		// Domain change is structural, should not reach here
+		Warn(TEXT("Domain change should be structural, skipping"));
+		Result.NumSkipped++;
+	}
+	else
+	{
+		// Extra properties — try FProperty reflection on UMaterial
+		FString PropName = KebabToCamel(Entry.Key);
+		FProperty* Prop = Material->GetClass()->FindPropertyByName(*PropName);
+		if (Prop)
+		{
+			void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Material);
+			FString Value = Entry.NewValue;
+			Value.RemoveFromStart(TEXT("\"")); Value.RemoveFromEnd(TEXT("\""));
+			MatBP2FPCompat::ImportPropertyText(Prop, Value, ValuePtr, Material);
+			Result.NumApplied++;
+		}
+		else
+		{
+			Warn(FString::Printf(TEXT("Unknown material property '%s'"), *Entry.Key));
+			Result.NumFailed++;
+		}
+	}
+}
+
+// ---- Expression Property ----
+
+void FMatLangPatcher::ApplyExpressionProperty(const FMatLangDiffEntry& Entry)
+{
+	const FString& OldId = Entry.OldExprId.IsEmpty() ? Entry.ExprId : Entry.OldExprId;
+	const FString& NewId = Entry.NewExprId.IsEmpty() ? Entry.ExprId : Entry.NewExprId;
+	UMaterialExpression* Expr = FindOldExpressionById(OldId);
+	if (!Expr)
+	{
+		Warn(FString::Printf(TEXT("Expression '%s' not found for property change"), *OldId));
+		Result.NumFailed++;
+		return;
+	}
+
+	if (Entry.Key == TEXT("editor-position"))
+	{
+		// Parse "(x y)" position
+		FString Val = Entry.NewValue;
+		Val.RemoveFromStart(TEXT("("));
+		Val.RemoveFromEnd(TEXT(")"));
+		TArray<FString> Parts;
+		Val.ParseIntoArray(Parts, TEXT(" "), true);
+		if (Parts.Num() >= 2)
+		{
+			Expr->MaterialExpressionEditorX = (int32)FCString::Atof(*Parts[0]);
+			Expr->MaterialExpressionEditorY = (int32)FCString::Atof(*Parts[1]);
+		}
+		Result.NumApplied++;
+		return;
+	}
+
+	if (Entry.Key == TEXT("comment"))
+	{
+		Expr->Desc = Entry.NewValue;
+		Result.NumApplied++;
+		return;
+	}
+
+	// Find expression in NewAST
+	TSharedPtr<FMatExpressionAST> NewExpr = NewAST->FindExpression(NewId);
+	if (NewExpr)
+	{
+		SetExpressionPropertyFromAST(Expr, Entry.Key, Entry.NewValue);
+	}
+	else
+	{
+		// Fallback: direct FProperty reflection
+		FString PropName = KebabToCamel(Entry.Key);
+		FProperty* Prop = Expr->GetClass()->FindPropertyByName(*PropName);
+		if (Prop)
+		{
+			void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Expr);
+			FString Value = Entry.NewValue;
+			Value.RemoveFromStart(TEXT("\"")); Value.RemoveFromEnd(TEXT("\""));
+			MatBP2FPCompat::ImportPropertyText(Prop, Value, ValuePtr, Expr);
+			Result.NumApplied++;
+		}
+		else
+		{
+			Warn(FString::Printf(TEXT("Property '%s' not found on expression '%s'"), *Entry.Key, *OldId));
+			Result.NumFailed++;
+		}
+	}
+}
+
+void FMatLangPatcher::SetExpressionPropertyFromAST(
+	UMaterialExpression* Expr, const FString& Key, const FString& Value)
+{
+	// Type-specific handling (same logic as Importer::SetExpressionProperties but for single property)
+#if MATBP2FP_HAS_NAMED_REROUTES
+	if (Cast<UMaterialExpressionNamedRerouteUsage>(Expr) && Key == TEXT("declaration"))
+	{
+		// Legacy DSL stored an object path here. DeclarationGuid is authoritative;
+		// graph normalization rebinds the native pointer before compilation.
+		Result.NumSkipped++;
+		return;
+	}
+#endif
+
+	// ---- Constants ----
+	if (auto* C = Cast<UMaterialExpressionConstant>(Expr))
+	{
+		if (Key == TEXT("value")) { C->R = FCString::Atof(*Value); Result.NumApplied++; return; }
+	}
+	if (auto* C2 = Cast<UMaterialExpressionConstant2Vector>(Expr))
+	{
+		if (Key == TEXT("value"))
+		{
+			FString V = Value; V.RemoveFromStart(TEXT("(")); V.RemoveFromEnd(TEXT(")"));
+			TArray<FString> P; V.ParseIntoArray(P, TEXT(" "), true);
+			if (P.Num() >= 2) { C2->R = FCString::Atof(*P[0]); C2->G = FCString::Atof(*P[1]); }
+			Result.NumApplied++; return;
+		}
+	}
+	if (auto* C3 = Cast<UMaterialExpressionConstant3Vector>(Expr))
+	{
+		if (Key == TEXT("value"))
+		{
+			FString V = Value; V.RemoveFromStart(TEXT("(")); V.RemoveFromEnd(TEXT(")"));
+			TArray<FString> P; V.ParseIntoArray(P, TEXT(" "), true);
+			if (P.Num() >= 3) { C3->Constant = FLinearColor(FCString::Atof(*P[0]), FCString::Atof(*P[1]), FCString::Atof(*P[2])); }
+			Result.NumApplied++; return;
+		}
+	}
+	if (auto* C4 = Cast<UMaterialExpressionConstant4Vector>(Expr))
+	{
+		if (Key == TEXT("value"))
+		{
+			FString V = Value; V.RemoveFromStart(TEXT("(")); V.RemoveFromEnd(TEXT(")"));
+			TArray<FString> P; V.ParseIntoArray(P, TEXT(" "), true);
+			if (P.Num() >= 4) { C4->Constant = FLinearColor(FCString::Atof(*P[0]), FCString::Atof(*P[1]), FCString::Atof(*P[2]), FCString::Atof(*P[3])); }
+			Result.NumApplied++; return;
+		}
+	}
+
+	// ---- Parameters ----
+	if (auto* SP = Cast<UMaterialExpressionScalarParameter>(Expr))
+	{
+		if (Key == TEXT("name")) { FString N = Value; N.RemoveFromStart(TEXT("\"")); N.RemoveFromEnd(TEXT("\"")); SP->ParameterName = *N; Result.NumApplied++; return; }
+		if (Key == TEXT("default")) { SP->DefaultValue = FCString::Atof(*Value); Result.NumApplied++; return; }
+		if (Key == TEXT("group")) { FString G = Value; G.RemoveFromStart(TEXT("\"")); G.RemoveFromEnd(TEXT("\"")); SP->Group = *G; Result.NumApplied++; return; }
+	}
+	if (auto* VP = Cast<UMaterialExpressionVectorParameter>(Expr))
+	{
+		if (Key == TEXT("name")) { FString N = Value; N.RemoveFromStart(TEXT("\"")); N.RemoveFromEnd(TEXT("\"")); VP->ParameterName = *N; Result.NumApplied++; return; }
+		if (Key == TEXT("default"))
+		{
+			FString V = Value; V.RemoveFromStart(TEXT("(")); V.RemoveFromEnd(TEXT(")"));
+			TArray<FString> P; V.ParseIntoArray(P, TEXT(" "), true);
+			if (P.Num() >= 4) VP->DefaultValue = FLinearColor(FCString::Atof(*P[0]), FCString::Atof(*P[1]), FCString::Atof(*P[2]), FCString::Atof(*P[3]));
+			else if (P.Num() >= 3) VP->DefaultValue = FLinearColor(FCString::Atof(*P[0]), FCString::Atof(*P[1]), FCString::Atof(*P[2]), 1.0f);
+			Result.NumApplied++; return;
+		}
+	}
+	if (auto* SSP = Cast<UMaterialExpressionStaticSwitchParameter>(Expr))
+	{
+		if (Key == TEXT("name")) { FString N = Value; N.RemoveFromStart(TEXT("\"")); N.RemoveFromEnd(TEXT("\"")); SSP->ParameterName = *N; Result.NumApplied++; return; }
+		if (Key == TEXT("default")) { SSP->DefaultValue = Value == TEXT("true"); Result.NumApplied++; return; }
+	}
+
+	// ---- Texture ----
+	if (auto* TS = Cast<UMaterialExpressionTextureSample>(Expr))
+	{
+		if (Key == TEXT("texture"))
+		{
+			FString Path = Value;
+			if (Path.StartsWith(TEXT("(asset "))) { Path = Path.Mid(7); Path.RemoveFromEnd(TEXT(")")); Path.TrimStartAndEndInline(); }
+			Path.RemoveFromStart(TEXT("\"")); Path.RemoveFromEnd(TEXT("\""));
+			UTexture* Tex = LoadObject<UTexture>(nullptr, *Path);
+			if (Tex) { TS->Texture = Tex; Result.NumApplied++; } else { Warn(FString::Printf(TEXT("Failed to load texture: %s"), *Path)); Result.NumFailed++; }
+			return;
+		}
+	}
+
+	// ---- TextureCoordinate ----
+	if (auto* TC = Cast<UMaterialExpressionTextureCoordinate>(Expr))
+	{
+		if (Key == TEXT("coordinate-index")) { TC->CoordinateIndex = (int32)FCString::Atof(*Value); Result.NumApplied++; return; }
+		if (Key == TEXT("u-tiling")) { TC->UTiling = FCString::Atof(*Value); Result.NumApplied++; return; }
+		if (Key == TEXT("v-tiling")) { TC->VTiling = FCString::Atof(*Value); Result.NumApplied++; return; }
+	}
+
+	// ---- ComponentMask ----
+	if (auto* CM = Cast<UMaterialExpressionComponentMask>(Expr))
+	{
+		if (Key == TEXT("mask"))
+		{
+			CM->R = Value.Contains(TEXT("r")); CM->G = Value.Contains(TEXT("g"));
+			CM->B = Value.Contains(TEXT("b")); CM->A = Value.Contains(TEXT("a"));
+			Result.NumApplied++; return;
+		}
+	}
+
+	// ---- Panner ----
+	if (auto* Pan = Cast<UMaterialExpressionPanner>(Expr))
+	{
+		if (Key == TEXT("speed-x")) { Pan->SpeedX = FCString::Atof(*Value); Result.NumApplied++; return; }
+		if (Key == TEXT("speed-y")) { Pan->SpeedY = FCString::Atof(*Value); Result.NumApplied++; return; }
+	}
+
+	// ---- Fresnel ----
+	if (auto* F = Cast<UMaterialExpressionFresnel>(Expr))
+	{
+		if (Key == TEXT("exponent")) { F->Exponent = FCString::Atof(*Value); Result.NumApplied++; return; }
+		if (Key == TEXT("base-reflect-fraction")) { F->BaseReflectFraction = FCString::Atof(*Value); Result.NumApplied++; return; }
+	}
+
+	// ---- If ----
+	if (auto* IfE = Cast<UMaterialExpressionIf>(Expr))
+	{
+		if (Key == TEXT("equality-threshold")) { IfE->EqualsThreshold = FCString::Atof(*Value); Result.NumApplied++; return; }
+	}
+
+	// ---- Custom ----
+	if (auto* Cust = Cast<UMaterialExpressionCustom>(Expr))
+	{
+		if (Key == TEXT("code")) { FString C = Value; C.RemoveFromStart(TEXT("\"")); C.RemoveFromEnd(TEXT("\"")); C = C.Replace(TEXT("\\\""), TEXT("\"")); Cust->Code = C; Result.NumApplied++; return; }
+		if (Key == TEXT("output-type")) { Cust->OutputType = (ECustomMaterialOutputType)FCString::Atoi(*Value); Result.NumApplied++; return; }
+		if (Key == TEXT("description")) { FString D = Value; D.RemoveFromStart(TEXT("\"")); D.RemoveFromEnd(TEXT("\"")); Cust->Description = D; Result.NumApplied++; return; }
+	}
+
+	// ---- Generic FProperty reflection fallback ----
+	FString PropName = KebabToCamel(Key);
+	FProperty* Prop = Expr->GetClass()->FindPropertyByName(*PropName);
+	if (Prop)
+	{
+		void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Expr);
+		FString CleanValue = Value;
+		CleanValue.RemoveFromStart(TEXT("\"")); CleanValue.RemoveFromEnd(TEXT("\""));
+		MatBP2FPCompat::ImportPropertyText(Prop, CleanValue, ValuePtr, Expr);
+		Result.NumApplied++;
+	}
+	else
+	{
+		Warn(FString::Printf(TEXT("Property '%s' not found on %s (tried '%s')"),
+			*Key, *Expr->GetClass()->GetName(), *PropName));
+		Result.NumFailed++;
+	}
+}
+
+// ---- Expression Input ----
+
+void FMatLangPatcher::ApplyExpressionInput(const FMatLangDiffEntry& Entry)
+{
+	const FString& OldId = Entry.OldExprId.IsEmpty() ? Entry.ExprId : Entry.OldExprId;
+	const FString& NewId = Entry.NewExprId.IsEmpty() ? Entry.ExprId : Entry.NewExprId;
+	UMaterialExpression* Expr = FindOldExpressionById(OldId);
+	if (!Expr)
+	{
+		Warn(FString::Printf(TEXT("Expression '%s' not found for input change"), *OldId));
+		Result.NumFailed++;
+		return;
+	}
+
+	// Get the new input data from NewAST
+	TSharedPtr<FMatExpressionAST> NewExpr = NewAST->FindExpression(NewId);
+	if (!NewExpr)
+	{
+		Warn(FString::Printf(TEXT("Expression '%s' not found in new AST"), *NewId));
+		Result.NumFailed++;
+		return;
+	}
+
+	if (Entry.Op == EMatLangDiffOp::ExprInputRemoved)
+	{
+		// Disconnect the input
+		FString CamelName = KebabToCamel(Entry.Key);
+		const int32 NumInputs = MatBP2FPCompat::CountExpressionInputs(Expr);
+		for (int32 i = 0; i < NumInputs; ++i)
+		{
+			FName InputName = Expr->GetInputName(i);
+			if (InputName.ToString().Equals(CamelName, ESearchCase::IgnoreCase))
+			{
+				FExpressionInput* Input = Expr->GetInput(i);
+				if (Input)
+				{
+					Input->Expression = nullptr;
+					Input->OutputIndex = 0;
+					Result.NumApplied++;
+					return;
+				}
+			}
+		}
+		Warn(FString::Printf(TEXT("Input '%s' not found on expression '%s'"), *Entry.Key, *OldId));
+		Result.NumFailed++;
+		return;
+	}
+
+	// Changed or Added — find the new connection in AST
+	const FMatLangInput* NewInput = NewExpr->FindInput(Entry.Key);
+	if (!NewInput)
+	{
+		Warn(FString::Printf(TEXT("Input '%s' not found in new AST for '%s'"), *Entry.Key, *NewId));
+		Result.NumFailed++;
+		return;
+	}
+
+	WireExpressionInput(Expr, Entry.Key, *NewInput);
+}
+
+void FMatLangPatcher::WireExpressionInput(
+	UMaterialExpression* Expr, const FString& InputName, const FMatLangInput& InputData)
+{
+	FString CamelName = KebabToCamel(InputName);
+	const int32 NumInputs = MatBP2FPCompat::CountExpressionInputs(Expr);
+	int32 TargetIdx = -1;
+
+	// Find by name
+	for (int32 i = 0; i < NumInputs; ++i)
+	{
+		FName UEName = Expr->GetInputName(i);
+		FString NameStr = UEName.ToString();
+		if (NameStr.Equals(CamelName, ESearchCase::IgnoreCase) ||
+			NameStr.Replace(TEXT(" "), TEXT("")).Equals(CamelName, ESearchCase::IgnoreCase))
+		{
+			TargetIdx = i;
+			break;
+		}
+	}
+
+	// Fallback by index
+	if (TargetIdx < 0)
+	{
+		if (InputName.StartsWith(TEXT("input-")))
+		{
+			TargetIdx = FCString::Atoi(*InputName.Mid(6));
+		}
+		else if (InputName == TEXT("a") && NumInputs > 0) TargetIdx = 0;
+		else if (InputName == TEXT("b") && NumInputs > 1) TargetIdx = 1;
+	}
+
+	if (TargetIdx < 0 || TargetIdx >= NumInputs)
+	{
+		Warn(FString::Printf(TEXT("Input '%s' not found on %s"), *InputName, *Expr->GetClass()->GetName()));
+		Result.NumFailed++;
+		return;
+	}
+
+	FExpressionInput* Input = Expr->GetInput(TargetIdx);
+	if (!Input)
+	{
+		Result.NumFailed++;
+		return;
+	}
+
+	if (InputData.IsConnected())
+	{
+		UMaterialExpression* TargetExpr = FindNewExpressionById(InputData.Connection->TargetId);
+		if (TargetExpr)
+		{
+			Input->Expression = TargetExpr;
+			Input->OutputIndex = InputData.Connection->OutputIndex;
+			Result.NumApplied++;
+		}
+		else
+		{
+			Warn(FString::Printf(TEXT("Target expression '%s' not found"), *InputData.Connection->TargetId));
+			Result.NumFailed++;
+		}
+	}
+	else
+	{
+		// Disconnect
+		Input->Expression = nullptr;
+		Input->OutputIndex = 0;
+		Result.NumApplied++;
+	}
+}
+
+// ---- Output Slot ----
+
+void FMatLangPatcher::ApplyOutputChange(const FMatLangDiffEntry& Entry)
+{
+	if (Entry.Op == EMatLangDiffOp::OutputRemoved)
+	{
+		// Clear the output slot
+		FMatLangInput EmptyInput;
+		EmptyInput.Name = Entry.Key;
+		WireOutputSlot(Entry.Key, EmptyInput);
+		return;
+	}
+
+	// Changed or Added — get new connection from AST
+	const FMatLangInput* NewOutput = NewAST->Outputs.Slots.Find(Entry.Key);
+	if (!NewOutput)
+	{
+		Warn(FString::Printf(TEXT("Output '%s' not found in new AST"), *Entry.Key));
+		Result.NumFailed++;
+		return;
+	}
+
+	WireOutputSlot(Entry.Key, *NewOutput);
+}
+
+void FMatLangPatcher::WireOutputSlot(const FString& SlotName, const FMatLangInput& InputData)
+{
+	FExpressionInput* Target = MatBP2FPCompat::GetMaterialInput(Material, SlotName);
+
+	if (!Target)
+	{
+		Warn(FString::Printf(TEXT("Unknown output slot '%s'"), *SlotName));
+		Result.NumFailed++;
+		return;
+	}
+
+	if (InputData.IsConnected())
+	{
+		UMaterialExpression* Expr = FindNewExpressionById(InputData.Connection->TargetId);
+		if (Expr)
+		{
+			Target->Expression = Expr;
+			Target->OutputIndex = InputData.Connection->OutputIndex;
+			Result.NumApplied++;
+		}
+		else
+		{
+			Warn(FString::Printf(TEXT("Target expression '%s' not found for output '%s'"),
+				*InputData.Connection->TargetId, *SlotName));
+			Result.NumFailed++;
+		}
+	}
+	else
+	{
+		// Clear this output slot
+		Target->Expression = nullptr;
+		Target->OutputIndex = 0;
+		Result.NumApplied++;
+	}
+}
+
+// ---- Helpers ----
+
+UMaterialExpression* FMatLangPatcher::FindOldExpressionById(const FString& Id)
+{
+	if (UMaterialExpression* const* Found = OldIdToExpr.Find(Id))
+	{
+		return *Found;
+	}
+	return nullptr;
+}
+
+UMaterialExpression* FMatLangPatcher::FindNewExpressionById(const FString& Id)
+{
+	if (UMaterialExpression* const* Found = NewIdToExpr.Find(Id))
+	{
+		return *Found;
+	}
+	// Backward compatibility for callers that construct legacy same-ID diff entries.
+	return FindOldExpressionById(Id);
+}
+
+void FMatLangPatcher::RecompileMaterial()
+{
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+}
+
+FString FMatLangPatcher::KebabToCamel(const FString& KebabCase)
+{
+	FString Result;
+	bool bCapNext = true;
+
+	for (TCHAR Ch : KebabCase)
+	{
+		if (Ch == '-')
+		{
+			bCapNext = true;
+		}
+		else
+		{
+			Result += bCapNext ? FChar::ToUpper(Ch) : Ch;
+			bCapNext = false;
+		}
+	}
+
+	return Result;
+}
+
+void FMatLangPatcher::Warn(const FString& Message)
+{
+	UE_LOG(LogMatLangPatcher, Warning, TEXT("%s"), *Message);
+	Result.Messages.Add(Message);
+}
+
+void FMatLangPatcher::Info(const FString& Message)
+{
+	UE_LOG(LogMatLangPatcher, Log, TEXT("%s"), *Message);
+	Result.Messages.Add(Message);
+}
+
+#else // !WITH_EDITOR
+
+FMatLangPatchResult FMatLangPatcher::Apply(
+	UMaterial* Material,
+	const FMatLangDiffResult& DiffResult,
+	const TSharedPtr<FMaterialGraphAST>& NewAST)
+{
+	FMatLangPatchResult Res;
+	Res.bSuccess = false;
+	Res.Messages.Add(TEXT("Material patching is only available in editor builds"));
+	return Res;
+}
+
+FMatLangPatchResult FMatLangPatcher::IncrementalUpdate(
+	UMaterial* Material,
+	const FString& NewDSL,
+	FMatLangDiffResult* OutDiffResult)
+{
+	FMatLangPatchResult Res;
+	Res.bSuccess = false;
+	Res.Messages.Add(TEXT("Material patching is only available in editor builds"));
+	return Res;
+}
+
+#endif // WITH_EDITOR
