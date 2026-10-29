@@ -17,6 +17,7 @@ $PluginRoot = [IO.Path]::GetFullPath($PluginRoot)
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
 $results = New-Object 'System.Collections.Generic.List[object]'
 $allVersions = @('4.26', '4.27', '5.0', '5.1', '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8')
+. (Join-Path $PSScriptRoot 'GeneralBlueprintMcp.ps1')
 
 if (-not (Test-Path -LiteralPath (Join-Path $PluginRoot 'GeneralBlueprint.uplugin'))) {
     throw "GeneralBlueprint.uplugin not found under $PluginRoot"
@@ -36,23 +37,6 @@ function Save-Manifest {
     param([System.Collections.Generic.List[object]]$Items, [string]$Path)
     $json = ConvertTo-Json -InputObject @($Items.ToArray()) -Depth 8
     [IO.File]::WriteAllText($Path, $json, [Text.UTF8Encoding]::new($false))
-}
-
-function Add-McpModulesToDescriptor {
-    param([string]$DescriptorPath)
-
-    $descriptor = Get-Content -LiteralPath $DescriptorPath -Raw | ConvertFrom-Json
-    $descriptor.Modules = @($descriptor.Modules) + @(
-        [pscustomobject]@{ Name = 'BlueprintLispMCP'; Type = 'Editor'; LoadingPhase = 'Default' },
-        [pscustomobject]@{ Name = 'AnimBP2FPMCP'; Type = 'Editor'; LoadingPhase = 'Default' },
-        [pscustomobject]@{ Name = 'MatBP2FPMCP'; Type = 'Editor'; LoadingPhase = 'Default' }
-    )
-    $descriptor.Plugins = @($descriptor.Plugins) + @(
-        [pscustomobject]@{ Name = 'ToolsetRegistry'; Enabled = $true },
-        [pscustomobject]@{ Name = 'ModelContextProtocol'; Enabled = $true }
-    )
-    $json = ConvertTo-Json -InputObject $descriptor -Depth 20
-    [IO.File]::WriteAllText($DescriptorPath, $json, [Text.UTF8Encoding]::new($false))
 }
 
 function Remove-EngineResult {
@@ -93,7 +77,8 @@ foreach ($version in $Versions) {
 
         $versionRoot = Join-Path $OutputRoot "UE_$version"
         New-Item -ItemType Directory -Path $versionRoot -Force | Out-Null
-        $zipPath = Join-Path $versionRoot "GeneralBlueprint-UE_$version-Win64.zip"
+        $builtEngineVersion = '{0}.{1}.{2}' -f $engineVersion.MajorVersion, $engineVersion.MinorVersion, $engineVersion.PatchVersion
+        $zipPath = Join-Path $versionRoot "GeneralBlueprint-UE_$builtEngineVersion-Win64.zip"
         if (Test-Path -LiteralPath $zipPath) {
             throw "Package already exists; move it aside before rebuilding: $zipPath"
         }
@@ -120,14 +105,7 @@ foreach ($version in $Versions) {
         if ($LASTEXITCODE -ge 8) { throw "Plugin staging copy failed with robocopy exit code $LASTEXITCODE." }
 
         if ($version -eq '5.8') {
-            foreach ($module in @('BlueprintLispMCP', 'AnimBP2FPMCP', 'MatBP2FPMCP')) {
-                $sourceModule = Join-Path $PluginRoot "MCP\Source\$module"
-                $stagedModule = Join-Path $stageRoot "Source\$module"
-                New-Item -ItemType Directory -Path $stagedModule -Force | Out-Null
-                & robocopy $sourceModule $stagedModule /E /NFL /NDL /NJH /NJS /NP | Out-Null
-                if ($LASTEXITCODE -ge 8) { throw "Failed to stage MCP module $module (robocopy $LASTEXITCODE)." }
-            }
-            Add-McpModulesToDescriptor -DescriptorPath (Join-Path $stageRoot 'GeneralBlueprint.uplugin')
+            Add-GeneralBlueprintMcp -PluginRoot $PluginRoot -Destination $stageRoot
         }
 
         # Fab accepts an English .txt guide. Generate it from the maintained
@@ -187,6 +165,7 @@ foreach ($version in $Versions) {
             'Docs\UserGuide.md',
             'Docs\UserGuide.txt',
             'Docs\UserGuide.zh-CN.md'
+            'Docs\UEMCP.zh-CN.md'
         )
         foreach ($relativePath in $requiredReleaseFiles) {
             $stagedFile = Join-Path $stageRoot $relativePath

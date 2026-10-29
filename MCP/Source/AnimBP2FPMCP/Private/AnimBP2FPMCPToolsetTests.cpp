@@ -40,7 +40,7 @@ bool FAnimBP2FPMCPToolsetSurfaceTest::RunTest(const FString& /*Parameters*/)
 	{
 		return false;
 	}
-	TestEqual(TEXT("Toolset schema tool count"), ToolEntries->Num(), 9);
+	TestEqual(TEXT("Toolset schema tool count"), ToolEntries->Num(), 11);
 
 	TSet<FString> ToolNames;
 	for (const TSharedPtr<FJsonValue>& ToolEntry : *ToolEntries)
@@ -67,6 +67,8 @@ bool FAnimBP2FPMCPToolsetSurfaceTest::RunTest(const FString& /*Parameters*/)
 		TEXT("ExportControlRig"),
 		TEXT("ExportEventGraph"),
 		TEXT("GetAnimBlueprintSyncState"),
+		TEXT("ValidateAnimBundle"),
+		TEXT("ValidateAnimBlueprintRoundTrip"),
 		TEXT("ApplyAnimBundle"),
 		TEXT("UpdateAnimBlueprint"),
 		TEXT("ReplaceEventGraph"),
@@ -93,6 +95,49 @@ bool FAnimBP2FPMCPToolsetSurfaceTest::RunTest(const FString& /*Parameters*/)
 			ToolNames.Contains(ForbiddenName));
 	}
 
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FAnimBP2FPMCPInputContractTest,
+	"AnimBP2FP.MCP.InputContract",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::CommandletContext | EAutomationTestFlags::EngineFilter)
+
+bool FAnimBP2FPMCPInputContractTest::RunTest(const FString& /*Parameters*/)
+{
+	const TArray<FString> InvalidPaths = {
+		TEXT("/Engine/Anim"), TEXT("/Game/../Anim"), TEXT("C:\\Anim.uasset"),
+		TEXT("/Game/Anim.Anim:Subobject"), TEXT("AnimBlueprint'/Game/Anim.Anim'"), TEXT("/Game/Anim.Other")
+	};
+	for (const FString& Path : InvalidPaths)
+	{
+		TestFalse(TEXT("Export rejects invalid project paths before loading"),
+			UAnimBP2FPToolset::ExportAnimBlueprint(Path).bSuccess);
+		const FAnimBP2FPMCPChangeResult Change = UAnimBP2FPToolset::UpdateAnimBlueprint(Path, TEXT("invalid"), false);
+		TestFalse(TEXT("Update rejects invalid project paths"), Change.bSuccess);
+		TestFalse(TEXT("Rejected input does not start mutation"), Change.bMutationStarted);
+	}
+	TArray<FAnimBP2FPMCPBundleSource> Sources;
+	FAnimBP2FPMCPBundleSource& Source = Sources.AddDefaulted_GetRef();
+	Source.SourceFile = TEXT("invalid.animlang");
+	Source.Source = TEXT("(anim-blueprint");
+	const FAnimBP2FPMCPBundleResult Invalid = UAnimBP2FPToolset::ValidateAnimBundle(Sources);
+	TestFalse(TEXT("Invalid bundle fails read-only validation"), Invalid.bSuccess);
+	TestTrue(TEXT("Invalid bundle returns structured source diagnostics"), Invalid.Diagnostics.Num() > 0);
+	TestFalse(TEXT("Validation never starts persistence"), Invalid.bMutationStarted || Invalid.bPersisted);
+	Sources[0].SourceFile = TEXT("../outside.animlang");
+	TestFalse(TEXT("Logical source traversal is rejected"), UAnimBP2FPToolset::ValidateAnimBundle(Sources).bSuccess);
+	TestFalse(TEXT("Persistent target traversal is rejected"),
+		UAnimBP2FPToolset::ApplyAnimBundle(Sources, TEXT("/Game/../Engine"), EAnimBP2FPMCPBundleMode::Strict, false).bSuccess);
+	for (const FName Name : { FName(TEXT("UpdateAnimBlueprint")), FName(TEXT("ReplaceEventGraph")), FName(TEXT("MergeEventGraph")) })
+	{
+		const UFunction* Function = UAnimBP2FPToolset::StaticClass()->FindFunctionByName(Name);
+		if (TestNotNull(TEXT("Mutating function exists"), Function))
+			TestFalse(TEXT("Save choice has no implicit default"), Function->HasMetaData(TEXT("CPP_Default_bSavePackage")));
+	}
+	const UFunction* Apply = UAnimBP2FPToolset::StaticClass()->FindFunctionByName(TEXT("ApplyAnimBundle"));
+	if (TestNotNull(TEXT("Bundle apply exists"), Apply))
+		TestFalse(TEXT("Persistence choice has no implicit default"), Apply->HasMetaData(TEXT("CPP_Default_bCommitPersistent")));
 	return true;
 }
 

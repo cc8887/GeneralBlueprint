@@ -9,7 +9,7 @@ GeneralBlueprint combines BlueprintLisp, AnimBP2FP, MatBP2FP, and BlueprintAutoL
 3. Open the project and enable **GeneralBlueprint** in **Edit > Plugins**, then restart when prompted. A source build may require the C++ toolchain for that engine version.
 4. The plugin enables the engine's **Control Rig** plugin. The Python examples below also require the engine's **Python Editor Script Plugin**.
 
-The UE 5.8 package additionally contains three MCP toolset modules. This package requires the engine's **Toolset Registry** and **Unreal MCP (ModelContextProtocol)** plugins, which are enabled by its descriptor. Unreal MCP is an experimental engine feature. The other engine packages contain no MCP modules. The MCP server is configured separately in Unreal Editor; installing GeneralBlueprint alone does not start a server.
+Current UE 5.8 source staging contains five MCP adapter modules (eight toolsets, 36 tools), including layout and highlight tools. Use `Scripts/Stage-Ue58Plugin.ps1` to prepare a source installation, or install the optional companion in `MCP` beside the base plugin. See [native MCP setup and catalog](UEMCP.zh-CN.md). The original published UE 5.8 ZIP contains the earlier three adapters. MCP requires the engine's **Toolset Registry** and **Unreal MCP (ModelContextProtocol)** plugins. These are experimental engine features. Other engine packages contain no MCP modules. Configure the MCP server separately in Unreal Editor; installing GeneralBlueprint alone does not start it.
 
 If you previously installed BlueprintLisp, AnimBP2FP, MatBP2FP, or BlueprintAutoLayout separately, disable and remove those standalone plugins before enabling GeneralBlueprint. Keep a backup of the project and its assets before importing DSL.
 

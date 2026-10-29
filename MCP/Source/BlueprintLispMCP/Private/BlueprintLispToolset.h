@@ -21,6 +21,8 @@ class BLUEPRINTLISPMCP_API UBlueprintLispToolset : public UToolsetDefinition
 	GENERATED_BODY()
 
 public:
+	virtual FString GetToolsetVersion() const override { return TEXT("1.1.0"); }
+
 	/** Export one named Blueprint graph to BlueprintLisp text. */
 	UFUNCTION(meta = (AICallable, AIAccessMode = "Read"), Category = "BlueprintLisp|Read")
 	static FBlueprintLispPythonResult ExportBlueprintGraph(
@@ -47,22 +49,22 @@ public:
 	UFUNCTION(meta = (AICallable, AIAccessMode = "Read"), Category = "BlueprintLisp|Read")
 	static FBlueprintLispPythonResult ValidateBlueprintLisp(const FString& DSLText);
 
-	/** Replace a named Blueprint graph from in-memory DSL and optionally compile/save. */
+	/** Replace a named Blueprint graph from in-memory DSL. Pass bCompile and bSavePackage explicitly; bSavePackage=false leaves the edited asset in memory. */
 	UFUNCTION(meta = (AICallable, AIAccessMode = "Write"), Category = "BlueprintLisp|Write")
 	static FBlueprintLispPythonResult ReplaceBlueprintGraph(
 		const FString& AssetPath,
 		const FString& GraphName,
 		const FString& DSLText,
-		bool bCompile = true,
-		bool bSavePackage = true);
+		bool bCompile,
+		bool bSavePackage);
 
-	/** Merge-append a named Blueprint graph using stable DSL IDs where available. */
+	/** Append DSL forms to a named Blueprint graph; repeated calls may duplicate nodes. This does not perform a semantic diff. Pass bCompile and bSavePackage explicitly. */
 	UFUNCTION(meta = (AICallable, AIAccessMode = "Write"), Category = "BlueprintLisp|Write")
 	static FBlueprintLispPythonResult MergeBlueprintGraph(
 		const FString& AssetPath,
 		const FString& GraphName,
 		const FString& DSLText,
-		bool bCompile = true,
-		bool bSavePackage = true);
+		bool bCompile,
+		bool bSavePackage);
 
 };

@@ -13,11 +13,35 @@
 #include "FBP2FPMappingRegistry.h"
 #include "RigLangExporter.h"
 #include "Animation/AnimBlueprint.h"
+#include "Editor.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
 
 namespace AnimBP2FPMCP
 {
+	template<typename TResult>
+	static TResult Failure(const FString& Error)
+	{
+		TResult Result;
+		Result.Error = Error;
+		return Result;
+	}
+
+	static bool CheckEditorContext(FString& OutError, const bool bMutation = false)
+	{
+		if (!IsInGameThread())
+		{
+			OutError = TEXT("AnimBP2FP tools must run on the editor game thread");
+			return false;
+		}
+		if (bMutation && GEditor && GEditor->PlayWorld)
+		{
+			OutError = TEXT("Stop Play In Editor before changing animation assets");
+			return false;
+		}
+		return true;
+	}
+
 	static FString DiagnosticSeverity(const EAnimLangDiagSeverity Severity)
 	{
 		switch (Severity)
@@ -61,7 +85,6 @@ namespace AnimBP2FPMCP
 	static FString NormalizePackagePath(const FString& InAssetPath)
 	{
 		FString Path = InAssetPath.TrimStartAndEnd();
-		Path.ReplaceInline(TEXT("'"), TEXT(""));
 		if (Path.Contains(TEXT(".")))
 		{
 			const FString PackagePath = FPackageName::ObjectPathToPackageName(Path);
@@ -73,12 +96,31 @@ namespace AnimBP2FPMCP
 		return Path;
 	}
 
+	static bool ValidateAssetPath(const FString& InPath, FString& OutPath, FString& OutError)
+	{
+		const FString Path = InPath.TrimStartAndEnd();
+		OutPath = NormalizePackagePath(Path);
+		if (!Path.StartsWith(TEXT("/Game/")) || Path.Contains(TEXT(".."))
+			|| Path.Contains(TEXT("\\")) || Path.Contains(TEXT("'")) || Path.Contains(TEXT(":"))
+			|| !FPackageName::IsValidLongPackageName(OutPath)
+			|| (Path.Contains(TEXT(".")) && !FPackageName::IsValidObjectPath(Path)))
+		{
+			OutError = TEXT("Provide a valid /Game package or object path without traversal or subobjects");
+			return false;
+		}
+		if (Path.Contains(TEXT(".")) && Path != OutPath + TEXT(".") + FPackageName::GetLongPackageAssetName(OutPath))
+		{
+			OutError = TEXT("Object path must name the asset matching its package leaf");
+			return false;
+		}
+		return true;
+	}
+
 	static UObject* LoadAsset(const FString& InAssetPath, FString& OutPackagePath, FString& OutError)
 	{
-		OutPackagePath = NormalizePackagePath(InAssetPath);
-		if (!FPackageName::IsValidLongPackageName(OutPackagePath))
+		if (!CheckEditorContext(OutError)
+			|| !ValidateAssetPath(InAssetPath, OutPackagePath, OutError))
 		{
-			OutError = FString::Printf(TEXT("Invalid asset path: %s"), *InAssetPath);
 			return nullptr;
 		}
 		const FString ObjectPath = OutPackagePath + TEXT(".")
@@ -170,14 +212,21 @@ namespace AnimBP2FPMCP
 			&& FPaths::IsRelative(SourceFile)
 			&& !SourceFile.Contains(TEXT(".."))
 			&& !SourceFile.Contains(TEXT(":"))
+			&& !SourceFile.Contains(TEXT("\\"))
 			&& (SourceFile.EndsWith(TEXT(".animlang")) || SourceFile.EndsWith(TEXT(".riglang")));
 	}
 }
 
 FAnimBP2FPMCPTextResult UAnimBP2FPToolset::ExportAnimBlueprint(const FString& AssetPath)
 {
+	FString SafePath, Error;
+	if (!AnimBP2FPMCP::CheckEditorContext(Error)
+		|| !AnimBP2FPMCP::ValidateAssetPath(AssetPath, SafePath, Error))
+	{
+		return AnimBP2FPMCP::Failure<FAnimBP2FPMCPTextResult>(Error);
+	}
 	return AnimBP2FPMCP::FromTextResult(
-		UAnimBP2FPPythonBridge::ExportAnimBlueprintToText(AssetPath));
+		UAnimBP2FPPythonBridge::ExportAnimBlueprintToText(SafePath));
 }
 
 FAnimBP2FPMCPExportBundleResult UAnimBP2FPToolset::ExportAnimBlueprintBundle(
@@ -291,15 +340,23 @@ FAnimBP2FPMCPTextResult UAnimBP2FPToolset::ExportEventGraph(
 	const bool bIncludePositions,
 	const bool bStableIds)
 {
+	FString SafePath, Error;
+	if (!AnimBP2FPMCP::CheckEditorContext(Error)
+		|| !AnimBP2FPMCP::ValidateAssetPath(AssetPath, SafePath, Error))
+	{
+		return AnimBP2FPMCP::Failure<FAnimBP2FPMCPTextResult>(Error);
+	}
 	return AnimBP2FPMCP::FromTextResult(
 		UAnimBP2FPPythonBridge::ExportEventGraphToText(
-			AssetPath, GraphName, bIncludePositions, bStableIds));
+			SafePath, GraphName, bIncludePositions, bStableIds));
 }
 
 FAnimBP2FPMCPMappingResult UAnimBP2FPToolset::GetAnimBlueprintSyncState(const FString& AssetPath)
 {
 	FAnimBP2FPMCPMappingResult Result;
-	const FString PackagePath = AnimBP2FPMCP::NormalizePackagePath(AssetPath);
+	FString PackagePath;
+	if (!AnimBP2FPMCP::CheckEditorContext(Result.Error)
+		|| !AnimBP2FPMCP::ValidateAssetPath(AssetPath, PackagePath, Result.Error)) return Result;
 	const FBP2FPMappingEntry* Entry = FBP2FPMappingRegistry::Get().FindByBlueprint(PackagePath);
 	if (!Entry)
 	{
@@ -317,6 +374,49 @@ FAnimBP2FPMCPMappingResult UAnimBP2FPToolset::GetAnimBlueprintSyncState(const FS
 	return Result;
 }
 
+FAnimBP2FPMCPBundleResult UAnimBP2FPToolset::ValidateAnimBundle(
+	const TArray<FAnimBP2FPMCPBundleSource>& Sources)
+{
+	FAnimBP2FPMCPBundleResult Result;
+	if (Sources.IsEmpty())
+	{
+		Result.Error = TEXT("At least one bundle source is required");
+		return Result;
+	}
+	FAnimLispWorkspace Workspace;
+	TSet<FString> Names;
+	for (const FAnimBP2FPMCPBundleSource& Source : Sources)
+	{
+		if (!AnimBP2FPMCP::IsSafeSourceName(Source.SourceFile) || Names.Contains(Source.SourceFile))
+		{
+			Result.Error = TEXT("Each source needs a unique relative .animlang or .riglang logical name");
+			return Result;
+		}
+		Names.Add(Source.SourceFile);
+		Workspace.AddSource(Source.SourceFile, Source.Source);
+	}
+	FAnimLangDiagnostics Diagnostics;
+	TArray<FAnimLispImportPlanEntry> Plan;
+	Result.bSuccess = Workspace.Build(Diagnostics) && Workspace.BuildImportPlan(Plan, Diagnostics);
+	for (const FAnimLispImportPlanEntry& Entry : Plan) Result.ModulePlan.Add(Entry.ModuleId.ToString());
+	for (const FAnimLangDiagnostic& Diagnostic : Diagnostics.Items)
+		Result.Diagnostics.Add(AnimBP2FPMCP::ToDiagnostic(Diagnostic));
+	if (!Result.bSuccess) Result.Error = Diagnostics.ToReport();
+	return Result;
+}
+
+FAnimBP2FPMCPTextResult UAnimBP2FPToolset::ValidateAnimBlueprintRoundTrip(const FString& AssetPath)
+{
+	FString SafePath, Error;
+	if (!AnimBP2FPMCP::CheckEditorContext(Error)
+		|| !AnimBP2FPMCP::ValidateAssetPath(AssetPath, SafePath, Error))
+	{
+		return AnimBP2FPMCP::Failure<FAnimBP2FPMCPTextResult>(Error);
+	}
+	return AnimBP2FPMCP::FromTextResult(
+		UAnimBP2FPPythonBridge::ValidateAnimBlueprintRoundTrip(SafePath));
+}
+
 FAnimBP2FPMCPBundleResult UAnimBP2FPToolset::ApplyAnimBundle(
 	const TArray<FAnimBP2FPMCPBundleSource>& Sources,
 	const FString& TargetRoot,
@@ -324,6 +424,15 @@ FAnimBP2FPMCPBundleResult UAnimBP2FPToolset::ApplyAnimBundle(
 	const bool bCommitPersistent)
 {
 	FAnimBP2FPMCPBundleResult Result;
+	FString SafeRoot = TargetRoot.TrimStartAndEnd();
+	SafeRoot.RemoveFromEnd(TEXT("/"));
+	if (!AnimBP2FPMCP::CheckEditorContext(Result.Error, true)) return Result;
+	if (SafeRoot != TEXT("/Game") && (!SafeRoot.StartsWith(TEXT("/Game/"))
+		|| SafeRoot.Contains(TEXT("..")) || !FPackageName::IsValidLongPackageName(SafeRoot)))
+	{
+		Result.Error = TEXT("TargetRoot must be a valid /Game content folder");
+		return Result;
+	}
 	if (Sources.IsEmpty())
 	{
 		Result.Error = TEXT("At least one bundle source is required");
@@ -358,7 +467,7 @@ FAnimBP2FPMCPBundleResult UAnimBP2FPToolset::ApplyAnimBundle(
 	Options.Mode = Mode == EAnimBP2FPMCPBundleMode::Strict
 		? EAnimLispBundleImportMode::Strict
 		: EAnimLispBundleImportMode::Legacy;
-	Options.TargetRoot = TargetRoot;
+	Options.TargetRoot = SafeRoot;
 	Options.bCommitPersistent = bCommitPersistent;
 
 	const FAnimLispBundleImportResult ImportResult = FAnimBPImporter::ImportBundle(BundleSources, Options);
@@ -396,8 +505,14 @@ FAnimBP2FPMCPChangeResult UAnimBP2FPToolset::UpdateAnimBlueprint(
 	const FString& DSLText,
 	const bool bSavePackage)
 {
+	FString SafePath, Error;
+	if (!AnimBP2FPMCP::CheckEditorContext(Error, true)
+		|| !AnimBP2FPMCP::ValidateAssetPath(AssetPath, SafePath, Error))
+	{
+		return AnimBP2FPMCP::Failure<FAnimBP2FPMCPChangeResult>(Error);
+	}
 	return AnimBP2FPMCP::FromChangeResult(
-		UAnimBP2FPPythonBridge::UpdateAnimBlueprintFromText(AssetPath, DSLText, bSavePackage),
+		UAnimBP2FPPythonBridge::UpdateAnimBlueprintFromText(SafePath, DSLText, bSavePackage),
 		bSavePackage);
 }
 
@@ -408,9 +523,15 @@ FAnimBP2FPMCPChangeResult UAnimBP2FPToolset::ReplaceEventGraph(
 	const bool bCompile,
 	const bool bSavePackage)
 {
+	FString SafePath, Error;
+	if (!AnimBP2FPMCP::CheckEditorContext(Error, true)
+		|| !AnimBP2FPMCP::ValidateAssetPath(AssetPath, SafePath, Error))
+	{
+		return AnimBP2FPMCP::Failure<FAnimBP2FPMCPChangeResult>(Error);
+	}
 	return AnimBP2FPMCP::FromChangeResult(
 		UAnimBP2FPPythonBridge::ImportEventGraphFromText(
-			AssetPath, GraphName, DSLText, bCompile, bSavePackage),
+			SafePath, GraphName, DSLText, bCompile, bSavePackage),
 		bSavePackage);
 }
 
@@ -421,9 +542,15 @@ FAnimBP2FPMCPChangeResult UAnimBP2FPToolset::MergeEventGraph(
 	const bool bCompile,
 	const bool bSavePackage)
 {
+	FString SafePath, Error;
+	if (!AnimBP2FPMCP::CheckEditorContext(Error, true)
+		|| !AnimBP2FPMCP::ValidateAssetPath(AssetPath, SafePath, Error))
+	{
+		return AnimBP2FPMCP::Failure<FAnimBP2FPMCPChangeResult>(Error);
+	}
 	return AnimBP2FPMCP::FromChangeResult(
 		UAnimBP2FPPythonBridge::UpdateEventGraphFromText(
-			AssetPath, GraphName, DSLText, bCompile, bSavePackage),
+			SafePath, GraphName, DSLText, bCompile, bSavePackage),
 		bSavePackage);
 }
 

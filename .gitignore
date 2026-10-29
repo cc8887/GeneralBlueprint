@@ -11,3 +11,4 @@ Docs/Fab/
 *.sln
 *.suo
 *.user
+__pycache__/

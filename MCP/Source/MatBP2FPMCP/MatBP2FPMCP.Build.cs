@@ -25,5 +25,6 @@ public class MatBP2FPMCP : ModuleRules
 			"MatBP2FPEditor",
 			"ToolsetRegistry"
 		});
+		PrivateDependencyModuleNames.AddRange(new string[] { "MatBP2FP", "UnrealEd", "Json", "AssetRegistry" });
 	}
 }

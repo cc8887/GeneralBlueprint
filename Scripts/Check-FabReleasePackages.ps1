@@ -90,7 +90,7 @@ foreach ($entry in $manifest) {
             foreach ($module in @('BlueprintLisp', 'AnimBP2FP', 'MatBP2FP', 'BlueprintAutoLayout')) {
                 if ($moduleNames -notcontains $module) { $issues.Add("Missing module $module") }
             }
-            foreach ($module in @('BlueprintLispMCP', 'AnimBP2FPMCP', 'MatBP2FPMCP')) {
+            foreach ($module in @('BlueprintLispMCP', 'AnimBP2FPMCP', 'MatBP2FPMCP', 'BlueprintAutoLayoutMCP', 'DrivenHighlightMCP')) {
                 if (($entry.Engine -eq '5.8') -ne ($moduleNames -contains $module)) {
                     $issues.Add("Unexpected MCP module state: $module")
                 }

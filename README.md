@@ -7,7 +7,7 @@ GeneralBlueprint combines four Unreal Editor tools in one plugin while keeping e
 - **MatBP2FP** — export and import Material and Material Function graphs as MatLang.
 - **BlueprintAutoLayout** — arrange Blueprint, Animation Blueprint, and Material graph nodes, with integrated DSL import hooks.
 
-The UE 5.8 package also contains three MCP toolset modules. In that package, the engine's Toolset Registry and Model Context Protocol plugins are required and enabled by the descriptor. Older engine packages omit these modules.
+UE 5.8 source staging exposes eight native Unreal MCP toolsets (36 tools) through five adapter modules, covering Blueprint, Animation/Control Rig, Material, graph layout, and property highlights. See the [UE 5.8 MCP setup and tool catalog](Docs/UEMCP.zh-CN.md). Older engine packages omit these modules; previously published ZIPs retain their original contents.
 
 ## Install
 
@@ -23,7 +23,7 @@ The release script creates one package for each supported engine version from UE
 ## Notes
 
 - Animation Blueprint import and Control Rig authoring capabilities depend on the target engine version; see [the compatibility matrix](Docs/Compatibility.md).
-- The UE 5.8 package adds `BlueprintLispMCP`, `AnimBP2FPMCP`, and `MatBP2FPMCP`. Its `ToolsetRegistry` and `ModelContextProtocol` dependencies are experimental engine features.
+- UE 5.8 staging adds `BlueprintLispMCP`, `AnimBP2FPMCP`, `MatBP2FPMCP`, `BlueprintAutoLayoutMCP`, and `DrivenHighlightMCP`. Its `ToolsetRegistry` and `ModelContextProtocol` dependencies are experimental engine features. Use `Scripts/Stage-Ue58Plugin.ps1` for source installation with MCP; the base descriptor keeps older-engine support.
 - BlueprintLisp and the DSL importers can reject or report lossy coverage for unsupported graph constructs. Keep source assets under version control and validate imports on copies first.
 
 ## Build release packages

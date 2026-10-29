@@ -29,6 +29,7 @@ public class BlueprintLispMCP : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"BlueprintLisp",
+			"BlueprintGraph",
 			"UnrealEd",
 			"Json"
 		});

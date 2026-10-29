@@ -48,20 +48,28 @@ public:
 	UFUNCTION(meta = (AICallable, AIAccessMode = "Read"), Category = "AnimBP|Read")
 	static FAnimBP2FPMCPMappingResult GetAnimBlueprintSyncState(const FString& AssetPath);
 
+	/** Validate AnimLang/RigLang source identities, references and import order without creating assets. This does not compile or prove runtime behavior. */
+	UFUNCTION(meta = (AICallable, AIAccessMode = "Read"), Category = "AnimBP|Read")
+	static FAnimBP2FPMCPBundleResult ValidateAnimBundle(const TArray<FAnimBP2FPMCPBundleSource>& Sources);
+
+	/** Compare an AnimBlueprint's exported DSL with its parsed/serialized form; does not import an asset. */
+	UFUNCTION(meta = (AICallable, AIAccessMode = "Read"), Category = "AnimBP|Read")
+	static FAnimBP2FPMCPTextResult ValidateAnimBlueprintRoundTrip(const FString& AssetPath);
+
 	/** Apply an in-memory Anim/Rig bundle using strict preflight and commit gates. */
 	UFUNCTION(meta = (AICallable, AIAccessMode = "Write"), Category = "AnimBP|Write")
 	static FAnimBP2FPMCPBundleResult ApplyAnimBundle(
 		const TArray<FAnimBP2FPMCPBundleSource>& Sources,
 		const FString& TargetRoot,
-		EAnimBP2FPMCPBundleMode Mode = EAnimBP2FPMCPBundleMode::Strict,
-		bool bCommitPersistent = true);
+		EAnimBP2FPMCPBundleMode Mode,
+		bool bCommitPersistent);
 
 	/** Update an existing AnimBlueprint from AnimLang text. */
 	UFUNCTION(meta = (AICallable, AIAccessMode = "Write"), Category = "AnimBP|Write")
 	static FAnimBP2FPMCPChangeResult UpdateAnimBlueprint(
 		const FString& AssetPath,
 		const FString& DSLText,
-		bool bSavePackage = true);
+		bool bSavePackage);
 
 	/** Replace a BlueprintLisp graph and optionally compile/save the asset. */
 	UFUNCTION(meta = (AICallable, AIAccessMode = "Write"), Category = "EventGraph|Write")
@@ -69,8 +77,8 @@ public:
 		const FString& AssetPath,
 		const FString& GraphName,
 		const FString& DSLText,
-		bool bCompile = true,
-		bool bSavePackage = true);
+		bool bCompile,
+		bool bSavePackage);
 
 	/** Merge-append a BlueprintLisp graph using the current supported reuse semantics. */
 	UFUNCTION(meta = (AICallable, AIAccessMode = "Write"), Category = "EventGraph|Write")
@@ -78,6 +86,6 @@ public:
 		const FString& AssetPath,
 		const FString& GraphName,
 		const FString& DSLText,
-		bool bCompile = true,
-		bool bSavePackage = true);
+		bool bCompile,
+		bool bSavePackage);
 };
