@@ -26,6 +26,8 @@ The release script creates one package for each supported engine version from UE
 - UE 5.8 staging adds `BlueprintLispMCP`, `AnimBP2FPMCP`, `MatBP2FPMCP`, `BlueprintAutoLayoutMCP`, and `DrivenHighlightMCP`. Its `ToolsetRegistry` and `ModelContextProtocol` dependencies are experimental engine features. Use `Scripts/Stage-Ue58Plugin.ps1` for source installation with MCP; the base descriptor keeps older-engine support.
 - BlueprintLisp and the DSL importers can reject or report lossy coverage for unsupported graph constructs. Keep source assets under version control and validate imports on copies first.
 
+BlueprintLisp source now includes explicit member/class/output fidelity, typed Map/DataTable access, and UE 5.8+ saved-graph maintenance. See the [semantic fidelity and regression guide](Docs/BlueprintLispSemanticFidelity.md). Existing release ZIPs are unchanged.
+
 ## Build release packages
 
 From a Developer PowerShell with the Unreal Engine build toolchains installed:
