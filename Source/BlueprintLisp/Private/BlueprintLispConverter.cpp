@@ -12551,6 +12551,40 @@ static UEdGraphNode* IMP_ConvertFormToNode(const FLispNodePtr& Form, FBPImportCo
 		}
 	}
 
+	// String-headed exec call: ("Func Name With Spaces" [self] [:pin value]...)
+	// GetFormName() returns "" when the head is a string atom, so the shorthand
+	// branch above is skipped. Extract the compound name (string head supported)
+	// and retry the shorthand call path.
+	if (FormName.IsEmpty())
+	{
+		int32 CompoundArgStartIndex = 1;
+		const FString CompoundName = IMP_ExtractCompoundName(Form, 0, CompoundArgStartIndex);
+		if (!CompoundName.IsEmpty())
+		{
+			if (UFunction* F = IMP_FindFunctionForForm(CompoundName, Form, Ctx))
+			{
+				UK2Node_CallFunction* CN = IMP_CreateOrReuseCallFunctionNode(Form, F, CompoundName, false, Ctx);
+				IMP_ApplyCallInputs(CN, Form, CompoundArgStartIndex, true, Ctx);
+				OutExecPin = IMP_GetExecOutput(CN);
+				return CN;
+			}
+
+			if (UFunction* ParentFunc = IMP_FindParentFunction(CompoundName, Ctx))
+			{
+				if (!ParentFunc->HasAnyFunctionFlags(FUNC_BlueprintCallable) && !ParentFunc->HasAnyFunctionFlags(FUNC_BlueprintPure))
+				{
+					UK2Node_CallParentFunction* CN = NewObject<UK2Node_CallParentFunction>(Ctx.Graph);
+					CN->SetFromFunction(ParentFunc); CN->NodePosX = Ctx.CurrentX; CN->NodePosY = Ctx.CurrentY;
+					Ctx.Graph->AddNode(CN, false, false); CN->AllocateDefaultPins(); IMP_EnsureGuid(CN); Ctx.AdvancePosition();
+					IMP_ApplyCallInputs(CN, Form, CompoundArgStartIndex, false, Ctx);
+					Ctx.TempIdToNode.Add(Ctx.GenerateTempId(), CN);
+					OutExecPin = IMP_GetExecOutput(CN);
+					return CN;
+				}
+			}
+		}
+	}
+
 	if (UEdGraphNode* OpaqueReusableNode = IMP_TryReuseOpaqueGenericBodyNode(Form, Ctx))
 	{
 		OutExecPin = IMP_GetExecOutput(OpaqueReusableNode);
