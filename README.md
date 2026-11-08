@@ -28,6 +28,8 @@ The release script creates one package for each supported engine version from UE
 
 BlueprintLisp source now includes explicit member/class/output fidelity, typed Map/DataTable access, and UE 5.8+ saved-graph maintenance. See the [semantic fidelity and regression guide](Docs/BlueprintLispSemanticFidelity.md). Existing release ZIPs are unchanged.
 
+Source also supports multicast delegate broadcasts, including nested targets and named payload pins. See the [broadcast syntax and validation guide](Docs/DelegateBroadcasts.md).
+
 ## Build release packages
 
 From a Developer PowerShell with the Unreal Engine build toolchains installed:

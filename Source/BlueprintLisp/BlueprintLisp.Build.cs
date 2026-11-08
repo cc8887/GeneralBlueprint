@@ -43,6 +43,7 @@ public class BlueprintLisp : ModuleRules
 			"SlateCore",
 			// AnimGraph: for AnimationTransitionGraph and AnimGraphNode_TransitionResult
 			"AnimGraph",
+			"GameplayTags", // Enum + GameplayTag delegate regression fixtures.
 		});
 	}
 }

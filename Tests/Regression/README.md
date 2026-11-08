@@ -16,6 +16,8 @@ python .\Tests\Regression\run_semantic_regression.py `
 
 这些测试证明对应夹具的编译和运行行为，不证明完整游戏逻辑、所有 K2 节点或所有引擎版本的兼容性。
 
+委托广播回归位于 `BlueprintLispDelegateTests.cpp`，使用 `--filter BlueprintLisp.Delegate` 执行。覆盖 self 无参广播、枚举与 GameplayTag 两参广播（连接输入和字面量）、函数返回值经成员读取后的外部广播、已执行 impure 目标输出、多个真实订阅者及取消订阅、后续执行连线、原生 `K2Node_CallDelegate` 导出/导入及隐式 self 目标，以及错误委托/目标/参数的显式拒绝。ReplaceGraph 与 MergeAppend 均有编译与运行断言；另外构造 Blueprint 自定义 Dispatcher 验证不创建同名签名函数图，并连续两次 MergeAppend 检查广播节点对象/GUID 复用且仅通知一次。完整 `--filter BlueprintLisp` 包含这些用例；测试不修改生产复刻体或补回已被语料管线丢弃的语句。
+
 第二轮数据访问回归位于 `BlueprintLispDataAccessTests.cpp`，可用同一运行器加 `--filter BlueprintLisp.DataAccess` 执行。覆盖 Map 的 Found/Value 显式绑定、关键字顺序、结构体值、零值与缺键、覆盖写入，以及 GetDataTableRow 的固定/动态表、拆分字段、found/not-found 分支、切换表、未消费 OutRow 和错误拒绝。ReplaceGraph 与 MergeAppend 均有运行断言。
 
 加 `--save-fixtures` 后，第二轮资产保存在 `/Game/BlueprintLispTests/Round2/<本次唯一编号>/`，同样记录于 `fixtures.json`。使用新 Editor 进程运行 `verify_data_access_reload.py`，并设置 `BLUEPRINTLISP_FIXTURE_MANIFEST` 与可选的 `BLUEPRINTLISP_RELOAD_RESULT`，验证原 Map 的变更以及数据表重载后的行内容和两个执行出口。完整 `--filter BlueprintLisp` 同时覆盖两轮测试；对应的两个重载脚本分别检查自己的夹具。

@@ -2,6 +2,8 @@
 
 Source integration includes the three repair rounds. These updates do not replace already published ZIPs.
 
+Multicast delegate calls now round-trip as `(broadcast :delegate OnDamage :args (:Result result))`, with optional `:owner`/`:object` target expressions. Import resolves the existing delegate property without creating a signature function graph. Explicitly missing `break-struct :field` names fail instead of selecting another output. See the [broadcast guide](DelegateBroadcasts.md) and `BlueprintLisp.Delegate.*` runtime fixtures.
+
 ## 语义保真扩展
 
 源码中的语义保真扩展（不代表已发布二进制的能力）：

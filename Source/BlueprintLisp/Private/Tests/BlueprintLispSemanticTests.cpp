@@ -221,6 +221,7 @@ bool FBLSemanticRejectsSilentLoss::RunTest(const FString& Parameters)
 		TEXT("(function Run (RecordScalar :Input))"),
 		TEXT("(function Run (RecordScalar :Input 1 2))"),
 		TEXT("(function Run (RecordScalar :Input (self.DoesNotExist)))"),
+		TEXT("(function Run (RecordScalar :Input (break-struct :struct \"/Script/CoreUObject.Vector\" :value (self.Location) :field DoesNotExist)))"),
 		TEXT("(function Run (RecordScalar :Input (node-output :node \"12345678\" :pin \"Missing\")))"),
 		TEXT("(function Run (RecordScalar :Input (ProduceValues :Seed 1)))") })
 	{

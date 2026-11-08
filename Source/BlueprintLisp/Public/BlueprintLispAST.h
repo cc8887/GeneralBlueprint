@@ -19,6 +19,8 @@
 //   (macro Name ...)                 - MacroGraph body
 //   (call-parent Name [:pin value])  - Parent override call in EventGraph
 //   (call-macro Name [:pin value])   - Macro instance call
+//   (broadcast :delegate Name :args (:pin value ...)) - Multicast delegate call
+//     Optional :owner ClassPath :object expr selects an external target.
 //   (let var expr)                   - Local variable / reusable value alias
 //   (set var expr)                   - Set variable
 //   (seq ...)                        - Execution sequence

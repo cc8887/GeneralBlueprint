@@ -24,6 +24,7 @@
 #include "EdGraphSchema_K2_Actions.h"
 #include "K2Node_Event.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_CallDelegate.h"
 #include "K2Node_GetDataTableRow.h"
 #include "K2Node_CallArrayFunction.h"
 #include "K2Node_CommutativeAssociativeBinaryOperator.h"
@@ -1782,6 +1783,56 @@ static FLispNodePtr ConvertNodeToLisp(UEdGraphNode* Node, UEdGraphPin* EnteredEx
 		return AppendNodeId(FLispNode::MakeList(Args), Node, ShortIds);
 	}
 
+	// ---- multicast delegate broadcast (not a call to its signature UFunction) ----
+	if (UK2Node_CallDelegate* Broadcast = Cast<UK2Node_CallDelegate>(Node))
+	{
+		FProperty* Property = Broadcast->GetProperty();
+		if (!Property || !Broadcast->GetDelegateSignature())
+		{
+			EXP_AddExportError(TEXT("Broadcast has an unresolved delegate property or signature"));
+			return FLispNode::MakeNil();
+		}
+		TArray<FLispNodePtr> Args = { FLispNode::MakeSymbol(TEXT("broadcast")),
+			FLispNode::MakeKeyword(TEXT(":delegate")), EXP_MakeNameAtom(Property->GetName()) };
+		UEdGraphPin* Target = Broadcast->FindPin(UEdGraphSchema_K2::PN_Self, EGPD_Input);
+		if (!Broadcast->DelegateReference.IsSelfContext() || (Target && (Target->LinkedTo.Num() || Target->DefaultObject)))
+		{
+			UClass* Owner = Property->GetOwnerClass();
+			if (!Owner || !Target)
+			{
+				EXP_AddExportError(TEXT("External broadcast has no owner or object pin"));
+				return FLispNode::MakeNil();
+			}
+			UBlueprint* Blueprint = FBlueprintEditorUtils::FindBlueprintForGraph(Graph);
+			FLispNodePtr Object = ConvertPureExpressionToLisp(Target, Graph, Visited, &ShortIds);
+			if (Object->IsNil() && Target->LinkedTo.Num() == 0 && Blueprint && Blueprint->GeneratedClass
+				&& Blueprint->GeneratedClass->IsChildOf(Owner)) Object = FLispNode::MakeSymbol(TEXT("self"));
+			if (Object->IsNil())
+			{
+				EXP_AddExportError(TEXT("External broadcast has no reconstructable object"));
+				return FLispNode::MakeNil();
+			}
+			FString OwnerToken = Owner->GetPathName();
+			if (UBlueprint* OwnerBlueprint = Cast<UBlueprint>(Owner->ClassGeneratedBy))
+			{
+				if (OwnerBlueprint == Blueprint) OwnerToken = TEXT("self");
+				else if (OwnerBlueprint->GeneratedClass) OwnerToken = OwnerBlueprint->GeneratedClass->GetPathName();
+			}
+			Args.Append({ FLispNode::MakeKeyword(TEXT(":owner")), FLispNode::MakeString(OwnerToken),
+				FLispNode::MakeKeyword(TEXT(":object")), Object });
+		}
+		TArray<FLispNodePtr> Inputs;
+		for (UEdGraphPin* Pin : Broadcast->Pins)
+		{
+			if (!Pin || Pin->Direction != EGPD_Input || Pin == Target || Pin->bHidden
+				|| Pin->SubPins.Num() || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+			Inputs.Add(FLispNode::MakeKeyword(TEXT(":") + EXP_GetStablePinKeywordName(Pin)));
+			Inputs.Add(ConvertPureExpressionToLisp(Pin, Graph, Visited, &ShortIds));
+		}
+		if (Inputs.Num()) Args.Append({ FLispNode::MakeKeyword(TEXT(":args")), FLispNode::MakeList(Inputs) });
+		return AppendNodeId(FLispNode::MakeList(Args), Node, ShortIds);
+	}
+
 	// ---- function call ----
 	if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
 	{
@@ -3333,6 +3384,56 @@ static FString IMP_GetKeywordAtomValue(const FLispNodePtr& Form, const TCHAR* Ke
 		return FString();
 	}
 	return IMP_GetAtomName(Form->GetKeywordArg(Keyword)).TrimStartAndEnd();
+}
+
+// Keep payload pin names separate from metadata (a delegate may have an Owner,
+// Object or Id argument). This checks syntax without touching any Blueprint.
+static bool BP_ValidateBroadcastForm(const FLispNodePtr& Form, FString& Error)
+{
+	const TSet<FString> Allowed = { TEXT(":delegate"), TEXT(":owner"), TEXT(":object"),
+		TEXT(":args"), TEXT(":id"), TEXT(":pos") };
+	TSet<FString> Seen;
+	for (int32 I = 1; I < Form->Num(); I += 2)
+	{
+		const auto Key = Form->Get(I);
+		if (!Key->IsKeyword() || I + 1 >= Form->Num() || !Allowed.Contains(Key->StringValue)
+			|| Seen.Contains(Key->StringValue))
+		{
+			Error = TEXT("broadcast contains an unknown, duplicate or incomplete keyword");
+			return false;
+		}
+		Seen.Add(Key->StringValue);
+	}
+	if (IMP_GetKeywordAtomValue(Form, TEXT(":delegate")).IsEmpty()
+		|| (Form->HasKeyword(TEXT(":owner")) && IMP_GetKeywordAtomValue(Form, TEXT(":owner")).IsEmpty())
+		|| Form->HasKeyword(TEXT(":owner")) != Form->HasKeyword(TEXT(":object"))
+		|| (Form->HasKeyword(TEXT(":object")) && Form->GetKeywordArg(TEXT(":object"))->IsNil()))
+	{
+		Error = TEXT("broadcast requires :delegate and, for an external target, both :owner and :object");
+		return false;
+	}
+	if (Form->HasKeyword(TEXT(":args")))
+	{
+		const auto Inputs = Form->GetKeywordArg(TEXT(":args"));
+		if (!Inputs->IsList())
+		{
+			Error = TEXT("broadcast :args must be a list of keyword/value pairs");
+			return false;
+		}
+		Seen.Empty();
+		for (int32 I = 0; I < Inputs->Num(); I += 2)
+		{
+			const auto Key = Inputs->Get(I);
+			const FString Name = Key->StringValue.ToLower();
+			if (!Key->IsKeyword() || Name.Len() <= 1 || I + 1 >= Inputs->Num() || Seen.Contains(Name))
+			{
+				Error = TEXT("broadcast :args contains a duplicate or incomplete input keyword");
+				return false;
+			}
+			Seen.Add(Name);
+		}
+	}
+	return true;
 }
 
 static bool IMP_IsEventStableIdNode(UEdGraphNode* Node)
@@ -6335,6 +6436,11 @@ static UEdGraphPin* IMP_TryBuildBreakStructOutputPin(const FLispNodePtr& Expr, U
 	UEdGraphPin* SelectedOutputPin = PreferredSplitOutputPin ? PreferredSplitOutputPin : (!PreferredFieldName.IsEmpty()
 		? IMP_FindOutputPinByName(BreakNode, PreferredFieldName)
 		: nullptr);
+	if (!SelectedOutputPin && !PreferredFieldName.IsEmpty())
+	{
+		Ctx.Errors.Add(FString::Printf(TEXT("IMP: break-struct '%s' has no field '%s'"), *StructTypeName, *PreferredFieldName));
+		return nullptr;
+	}
 	if (!SelectedOutputPin && DestinationPin)
 	{
 		SelectedOutputPin = IMP_SelectBestDataOutputPinForDestination(BreakNode, DestinationPin, Ctx.Graph, PreferredFieldName);
@@ -8540,7 +8646,7 @@ static bool IMP_PreflightTimelineExecBody(
 
 	static const TSet<FString> KnownExecForms = {
 		TEXT("timeline-control"), TEXT("create-object"), TEXT("evaluate-chooser"),
-		TEXT("set-struct-fields"), TEXT("set"), TEXT("let"),
+		TEXT("set-struct-fields"), TEXT("set"), TEXT("let"), TEXT("broadcast"),
 	};
 	if (FormName == TEXT("set-local"))
 	{
@@ -11227,6 +11333,66 @@ static UK2Node_GetDataTableRow* IMP_ImportDataTableRow(const FLispNodePtr& Form,
 	return Node;
 }
 
+static UK2Node_CallDelegate* IMP_ImportBroadcast(const FLispNodePtr& Form, FBPImportContext& Ctx)
+{
+	FString Error;
+	if (!BP_ValidateBroadcastForm(Form, Error)) { Ctx.Errors.Add(Error); return nullptr; }
+	const FString Name = IMP_GetKeywordAtomValue(Form, TEXT(":delegate"));
+	const FString OwnerPath = IMP_GetKeywordAtomValue(Form, TEXT(":owner"));
+	const bool bSelf = OwnerPath.IsEmpty();
+	UClass* Owner = bSelf && Ctx.Blueprint ? Ctx.Blueprint->SkeletonGeneratedClass : nullptr;
+	if (bSelf && !Owner && Ctx.Blueprint) Owner = Ctx.Blueprint->GeneratedClass;
+	if (!bSelf)
+	{
+		if (OwnerPath.Equals(TEXT("self"), ESearchCase::IgnoreCase) && Ctx.Blueprint)
+		{
+			Owner = Ctx.Blueprint->SkeletonGeneratedClass;
+			if (!Owner) Owner = Ctx.Blueprint->GeneratedClass;
+		}
+		else Owner = IMP_FindClassByName(OwnerPath, Ctx);
+	}
+	auto* Property = Owner ? FindFProperty<FMulticastDelegateProperty>(Owner, FName(*Name)) : nullptr;
+	if (!Property || !Property->SignatureFunction || !Property->HasAnyPropertyFlags(CPF_BlueprintCallable))
+	{
+		Ctx.Errors.Add(FString::Printf(TEXT("IMP: broadcast '%s' is missing or is not a Blueprint-callable multicast delegate on '%s'"),
+			*Name, Owner ? *Owner->GetPathName() : *OwnerPath));
+		return nullptr;
+	}
+	UK2Node_CallDelegate* Node = Cast<UK2Node_CallDelegate>(IMP_FindReusableBodyNodeByStableId(Form, Ctx));
+	if (Node && (Node->GetPropertyName() != Property->GetFName()
+		|| Node->DelegateReference.IsSelfContext() != bSelf
+		|| (!bSelf && Node->DelegateReference.GetMemberParentClass() != Owner))) Node = nullptr;
+	if (Node) IMP_MarkReusableBodyNodeConsumed(Node, Ctx);
+	else
+	{
+		Node = NewObject<UK2Node_CallDelegate>(Ctx.Graph);
+		Node->SetFromProperty(Property, bSelf, Owner);
+		Node->NodePosX = Ctx.CurrentX; Node->NodePosY = Ctx.CurrentY;
+		Ctx.Graph->AddNode(Node, false, false);
+		Node->AllocateDefaultPins(); IMP_EnsureGuid(Node);
+	}
+	Ctx.AdvancePosition();
+	Ctx.TempIdToNode.Add(Ctx.GenerateTempId(), Node);
+	UEdGraphPin* Target = Node->FindPin(UEdGraphSchema_K2::PN_Self, EGPD_Input);
+	if (!bSelf && (!Target || !IMP_SetPinFromExpr(Target, Form->GetKeywordArg(TEXT(":object")), Ctx)))
+		Ctx.Errors.Add(FString::Printf(TEXT("IMP: broadcast '%s' object could not be reconstructed"), *Name));
+	const auto Inputs = Form->GetKeywordArg(TEXT(":args"));
+	TSet<UEdGraphPin*> Assigned;
+	for (int32 I = 0; Inputs.IsValid() && I + 1 < Inputs->Num(); I += 2)
+	{
+		const FString PinName = Inputs->Get(I)->StringValue.Mid(1);
+		UEdGraphPin* Pin = IMP_FindInputPin(Node, PinName);
+		if (!Pin || Pin == Target || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec || Assigned.Contains(Pin))
+		{
+			Ctx.Errors.Add(FString::Printf(TEXT("IMP: broadcast '%s' has an unknown or duplicate input '%s'"), *Name, *PinName));
+			continue;
+		}
+		Assigned.Add(Pin);
+		IMP_SetPinFromExpr(Pin, Inputs->Get(I + 1), Ctx);
+	}
+	return Node;
+}
+
 static UEdGraphNode* IMP_ConvertFormToNodeStable(const FLispNodePtr& Form, FBPImportContext& Ctx, UEdGraphPin*& OutExecPin)
 {
 	UEdGraphNode* Node = IMP_ConvertFormToNode(Form, Ctx, OutExecPin);
@@ -11246,6 +11412,12 @@ static UEdGraphNode* IMP_ConvertFormToNode(const FLispNodePtr& Form, FBPImportCo
 	if (!Form.IsValid() || !Form->IsList() || Form->Num() == 0) return nullptr;
 
 	FString FormName = Form->GetFormName();
+	if (FormName.Equals(TEXT("broadcast"), ESearchCase::IgnoreCase))
+	{
+		UK2Node_CallDelegate* Node = IMP_ImportBroadcast(Form, Ctx);
+		OutExecPin = Node ? IMP_GetExecOutput(Node) : nullptr;
+		return Node;
+	}
 	if (FormName.Equals(TEXT("get-data-table-row"), ESearchCase::IgnoreCase))
 	{
 		return IMP_ImportDataTableRow(Form, Ctx);
@@ -13213,8 +13385,18 @@ FBlueprintLispResult FBlueprintLispConverter::Validate(const FString& LispCode)
 		return FBlueprintLispResult::Fail(FString::Printf(TEXT("Parse error at %d:%d: %s"),
 			PR.ErrorLine, PR.ErrorColumn, *PR.Error));
 
+	TFunction<bool(const FLispNodePtr&, FString&)> CheckBroadcasts;
+	CheckBroadcasts = [&CheckBroadcasts](const FLispNodePtr& Node, FString& Error)
+	{
+		if (!Node.IsValid() || !Node->IsList()) return true;
+		if (Node->IsForm(TEXT("broadcast")) && !BP_ValidateBroadcastForm(Node, Error)) return false;
+		for (const auto& Child : Node->Children) if (!CheckBroadcasts(Child, Error)) return false;
+		return true;
+	};
 	for (const auto& Node : PR.Nodes)
 	{
+		FString BroadcastError;
+		if (!CheckBroadcasts(Node, BroadcastError)) return FBlueprintLispResult::Fail(BroadcastError);
 		if (!Node.IsValid() || !Node->IsList())
 			return FBlueprintLispResult::Fail(TEXT("Top-level expressions must be lists"));
 		FString Form = Node->GetFormName().ToLower();
