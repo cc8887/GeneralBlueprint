@@ -1,10 +1,10 @@
-# UE 5.8 原生 Unreal MCP 接口
+# UE 5.8/5.9 原生 Unreal MCP 接口
 
 GeneralBlueprint 使用 UE 自带的 `ToolsetRegistry` 和 `ModelContextProtocol`，通过 `UToolsetDefinition`、静态 `UFUNCTION(meta=(AICallable))` 暴露工具。无需另起 Python MCP 服务，也无需开启全部引擎 toolset。实现方式遵循 [Epic Unreal MCP 文档](https://dev.epicgames.com/documentation/unreal-engine/unreal-mcp-in-unreal-editor)。
 
 ## 从当前源码安装
 
-基础描述符继续兼容旧引擎；UE 5.8 专用反射代码保存在 `MCP/Source`，不会被旧版本的 UHT 扫描。将当前源码生成为一个包含 MCP 的插件，输出目录必须不存在：
+基础描述符继续兼容旧引擎；UE 5.8/5.9 的 MCP 反射代码保存在 `MCP/Source`，不会被旧版本的 UHT 扫描。将当前源码生成为一个包含 MCP 的插件，输出目录必须不存在：
 
 ```powershell
 .\Scripts\Stage-Ue58Plugin.ps1 `
@@ -12,18 +12,18 @@ GeneralBlueprint 使用 UE 自带的 `ToolsetRegistry` 和 `ModelContextProtocol
   -OutputDirectory '<Project>\Plugins\GeneralBlueprint'
 ```
 
-输出插件包含五个 MCP 模块和两个引擎插件依赖。随后使用 UE 5.8 工具链构建项目 Editor target，打开项目并启用 GeneralBlueprint。该脚本核对 `Build.version`，只接受 UE 5.8.x。
+输出插件包含五个 MCP 模块和两个引擎插件依赖。随后使用对应引擎工具链构建项目 Editor target，打开项目并启用 GeneralBlueprint。该脚本保留原有文件名，核对 `Build.version`，接受 UE 5.8.x 和 UE 5.9.x；5.9 示例可将 `EngineRoot` 改为 `E:\UE_5.9`。
 
-发布包文件名标明实际构建版本；描述符 `EngineVersion` 保留 UE 打包器生成的兼容基线（`5.8.0`），不能据此判断实际构建补丁版本。
+发布包文件名标明实际构建版本；描述符 `EngineVersion` 保留 UE 打包器生成的兼容基线（例如 `5.8.0`、`5.9.0`），不能据此判断实际构建补丁版本。
 
-已有源码安装也可将 `MCP` 目录单独复制为 `<Project>/Plugins/GeneralBlueprintMCP`，保留旁边的基础 GeneralBlueprint 插件，然后显式启用 **GeneralBlueprint MCP (UE 5.8)**。两种安装方式任选一种，避免同名模块重复。发布脚本复用相同模块清单，在 UE 5.8 包中合并模块；其他版本仍排除 MCP。历史下载包不会随源码更新自动改变。
+已有源码安装也可将 `MCP` 目录单独复制为 `<Project>/Plugins/GeneralBlueprintMCP`，保留旁边的基础 GeneralBlueprint 插件，然后显式启用 **GeneralBlueprint MCP (UE 5.8/5.9)**。两种安装方式任选一种，避免同名模块重复。发布脚本复用相同模块清单，在 UE 5.8 和 5.9 包中合并模块；旧版本仍排除 MCP。历史下载包不会随源码更新自动改变。
 
 ## 启动与发现
 
 1. 确认 **Toolset Registry** 和 **Unreal MCP / ModelContextProtocol** 已启用，重启 Editor。
 2. 在控制台执行 `ModelContextProtocol.StartServer 8000`。默认 HTTP 地址为 `http://127.0.0.1:8000/mcp`，也可在 Editor Preferences 中配置自动启动。
 3. 客户端完成 MCP `initialize`、`notifications/initialized` 握手。
-4. `tools/list` 默认返回 `list_toolsets`、`describe_toolset`、`call_tool`。先发现 toolset，再按需取 schema 和调用。
+4. UE 5.8 的 `tools/list` 默认返回 `list_toolsets`、`describe_toolset`、`call_tool`。UE 5.9 改为 `list_toolsets`、`describe_toolsets`、`describe_tools`、`call_tool`；先发现 toolset，再按需取 schema 和调用。
 
 修改 C++ 后需要重新构建并让 Editor 加载新二进制；新增或修改反射声明时应重启 Editor。`ModelContextProtocol.RefreshTools` 只刷新工具注册信息，不会编译或加载修改后的 C++。请求由引擎串行派发到游戏线程。
 
@@ -46,7 +46,7 @@ GeneralBlueprint 使用 UE 自带的 `ToolsetRegistry` 和 `ModelContextProtocol
 
 ## 调用示例
 
-所有参数名、必填字段和返回类型以 `describe_toolset` 的实时 schema 为准。原生参数使用反射名称，例如 `AssetPath`、`GraphName`、`bSavePackage`。
+所有参数名、必填字段和返回类型以引擎返回的实时 schema 为准。UE 5.9 使用以下批量查询，`include_schemas` 必须为 `true` 才会返回 schema；结果位于 `toolsets[名称]`，错误位于 `errors`。UE 5.8 使用 `describe_toolset`，参数为 `{"toolset_name":"名称"}`，直接返回 toolset schema。原生参数使用反射名称，例如 `AssetPath`、`GraphName`、`bSavePackage`。
 
 ```json
 {
@@ -54,8 +54,8 @@ GeneralBlueprint 使用 UE 自带的 `ToolsetRegistry` 和 `ModelContextProtocol
   "id": 2,
   "method": "tools/call",
   "params": {
-    "name": "describe_toolset",
-    "arguments": {"toolset_name": "BlueprintAutoLayoutMCP.BlueprintAutoLayoutEditToolset"}
+    "name": "describe_toolsets",
+    "arguments": {"toolset_names": ["BlueprintAutoLayoutMCP.BlueprintAutoLayoutEditToolset"], "include_schemas": true}
   }
 }
 ```
@@ -100,4 +100,4 @@ GeneralBlueprint 使用 UE 自带的 `ToolsetRegistry` 和 `ModelContextProtocol
 python .\Scripts\Test-Ue58Mcp.py --url http://127.0.0.1:8000/mcp --output-jsonl '<Evidence>\mcp.jsonl'
 ```
 
-脚本逐条保存实际请求和响应，检查目录、各 toolset schema 和调用结果。测试脚本成功与构建成功分别记录；它们不替代交互 UI、渲染像素或完整资产库验收。
+脚本保留原有文件名，会根据 `tools/list` 自动选择 UE 5.8 或 5.9 的发现接口，逐条保存实际请求和响应，检查目录、各 toolset schema 和调用结果。测试脚本成功与构建成功分别记录；它们不替代交互 UI、渲染像素或完整资产库验收。

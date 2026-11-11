@@ -9,8 +9,8 @@ $ErrorActionPreference = 'Stop'
 $PluginRoot = [IO.Path]::GetFullPath($PluginRoot)
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $engineVersion = Get-Content -LiteralPath (Join-Path $EngineRoot 'Engine\Build\Build.version') -Raw | ConvertFrom-Json
-if ($engineVersion.MajorVersion -ne 5 -or $engineVersion.MinorVersion -ne 8) {
-    throw 'This staging entrypoint targets UE 5.8.x only.'
+if ($engineVersion.MajorVersion -ne 5 -or $engineVersion.MinorVersion -notin @(8, 9)) {
+    throw 'This staging entrypoint targets UE 5.8.x and UE 5.9.x.'
 }
 if (Test-Path -LiteralPath $OutputDirectory) { throw "Choose a new output directory: $OutputDirectory" }
 if ($PluginRoot.StartsWith($OutputDirectory.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
@@ -24,4 +24,4 @@ $copyArgs = @($PluginRoot, $OutputDirectory, '/E', '/NFL', '/NDL', '/NJH', '/NJS
 if ($LASTEXITCODE -ge 8) { throw "Source staging failed (robocopy $LASTEXITCODE)." }
 . (Join-Path $PSScriptRoot 'GeneralBlueprintMcp.ps1')
 Add-GeneralBlueprintMcp -PluginRoot $PluginRoot -Destination $OutputDirectory
-Write-Output "Staged UE 5.8 source plugin: $OutputDirectory"
+Write-Output "Staged UE 5.$($engineVersion.MinorVersion) source plugin: $OutputDirectory"

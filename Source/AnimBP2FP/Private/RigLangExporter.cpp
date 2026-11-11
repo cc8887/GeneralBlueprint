@@ -2,6 +2,7 @@
 // Copyright (c) 2026 cc8887. All Rights Reserved.
 
 #include "RigLangExporter.h"
+#include "RigLangEngineCompat.h"
 
 namespace
 {
@@ -448,8 +449,8 @@ FString StableRuntimeSymbol(const FString& Value)
 FRigFunctionIdentifierAST ExportFunctionIdentifier(const FRigVMGraphFunctionIdentifier& Identifier)
 {
 	FRigFunctionIdentifierAST Result;
-	Result.HostObject = Identifier.HostObject.ToString();
-	Result.LibraryNodePath = Identifier.GetLibraryNodePath();
+	Result.HostObject = RigLangEngineCompat::FunctionHostPath(Identifier);
+	Result.LibraryNodePath = RigLangEngineCompat::FunctionLibraryNodePath(Identifier);
 	return Result;
 }
 
@@ -1160,8 +1161,8 @@ FRigLangExportResult FRigLangExporter::Export(
 				Parent.InitialWeight.Location = InitialWeight.Location;
 				Parent.InitialWeight.Rotation = InitialWeight.Rotation;
 				Parent.InitialWeight.Scale = InitialWeight.Scale;
-				if (MultiParent && MultiParent->ParentConstraints.IsValidIndex(ParentIndex))
-					Parent.Label = MultiParent->ParentConstraints[ParentIndex].DisplayLabel.ToString();
+				if (MultiParent)
+					Parent.Label = RigLangEngineCompat::ParentLabel(Hierarchy, MultiParent, ParentIndex);
 			}
 			Element.Properties.Add(TEXT("parents"), TEXT("(") + FString::Join(ParentValues, TEXT(" ")) + TEXT(")"));
 			Element.Properties.Add(TEXT("parent-weights-current"),
@@ -1171,8 +1172,8 @@ FRigLangExportResult FRigLangExporter::Export(
 			TArray<FString> ParentLabels;
 			if (MultiParent)
 			{
-				for (const FRigElementParentConstraint& Constraint : MultiParent->ParentConstraints)
-					ParentLabels.Add(QuoteRigLangValue(Constraint.DisplayLabel.ToString()));
+				for (int32 ParentIndex = 0; ParentIndex < SourceParents.Num(); ++ParentIndex)
+					ParentLabels.Add(QuoteRigLangValue(RigLangEngineCompat::ParentLabel(Hierarchy, MultiParent, ParentIndex)));
 			}
 			Element.Properties.Add(TEXT("parent-labels"),
 				TEXT("(") + FString::Join(ParentLabels, TEXT(" ")) + TEXT(")"));
@@ -1208,23 +1209,24 @@ FRigLangExportResult FRigLangExporter::Export(
 
 			if (const FRigControlElement* Control = Hierarchy->Find<FRigControlElement>(Key))
 			{
+				const FRigControlSettings Settings = RigLangEngineCompat::ControlSettings(Hierarchy, Control);
 				FRigHierarchyStateAST& SettingsState = Element.States.AddDefaulted_GetRef(); SettingsState.Kind = ERigHierarchyStateKind::ControlSettings;
-				SettingsState.Role = TEXT("initial"); SettingsState.Type = StaticEnum<ERigControlType>()->GetNameStringByValue(static_cast<int64>(Control->Settings.ControlType));
-				SettingsState.SerializedValue = ExportStructText(FRigControlSettings::StaticStruct(), &Control->Settings);
-				Element.States.Add(ExportControlState(Hierarchy->GetControlValue(Key, ERigControlValueType::Current), Control->Settings.ControlType, TEXT("current")));
-				Element.States.Add(ExportControlState(Hierarchy->GetControlValue(Key, ERigControlValueType::Initial), Control->Settings.ControlType, TEXT("initial")));
-				Element.States.Add(ExportControlState(Hierarchy->GetControlValue(Key, ERigControlValueType::Minimum), Control->Settings.ControlType, TEXT("minimum")));
-				Element.States.Add(ExportControlState(Hierarchy->GetControlValue(Key, ERigControlValueType::Maximum), Control->Settings.ControlType, TEXT("maximum")));
+				SettingsState.Role = TEXT("initial"); SettingsState.Type = StaticEnum<ERigControlType>()->GetNameStringByValue(static_cast<int64>(Settings.ControlType));
+				SettingsState.SerializedValue = ExportStructText(FRigControlSettings::StaticStruct(), &Settings);
+				Element.States.Add(ExportControlState(Hierarchy->GetControlValue(Key, ERigControlValueType::Current), Settings.ControlType, TEXT("current")));
+				Element.States.Add(ExportControlState(Hierarchy->GetControlValue(Key, ERigControlValueType::Initial), Settings.ControlType, TEXT("initial")));
+				Element.States.Add(ExportControlState(Hierarchy->GetControlValue(Key, ERigControlValueType::Minimum), Settings.ControlType, TEXT("minimum")));
+				Element.States.Add(ExportControlState(Hierarchy->GetControlValue(Key, ERigControlValueType::Maximum), Settings.ControlType, TEXT("maximum")));
 				Element.Properties.Add(TEXT("control-settings"), QuoteRigLangValue(
-					ExportStructText(FRigControlSettings::StaticStruct(), &Control->Settings)));
+					ExportStructText(FRigControlSettings::StaticStruct(), &Settings)));
 				Element.Properties.Add(TEXT("control-value-current"), ExportTypedControlValue(
-					Hierarchy->GetControlValue(Key, ERigControlValueType::Current), Control->Settings.ControlType));
+					Hierarchy->GetControlValue(Key, ERigControlValueType::Current), Settings.ControlType));
 				Element.Properties.Add(TEXT("control-value-initial"), ExportTypedControlValue(
-					Hierarchy->GetControlValue(Key, ERigControlValueType::Initial), Control->Settings.ControlType));
+					Hierarchy->GetControlValue(Key, ERigControlValueType::Initial), Settings.ControlType));
 				Element.Properties.Add(TEXT("control-value-minimum"), ExportTypedControlValue(
-					Hierarchy->GetControlValue(Key, ERigControlValueType::Minimum), Control->Settings.ControlType));
+					Hierarchy->GetControlValue(Key, ERigControlValueType::Minimum), Settings.ControlType));
 				Element.Properties.Add(TEXT("control-value-maximum"), ExportTypedControlValue(
-					Hierarchy->GetControlValue(Key, ERigControlValueType::Maximum), Control->Settings.ControlType));
+					Hierarchy->GetControlValue(Key, ERigControlValueType::Maximum), Settings.ControlType));
 				Element.Properties.Add(TEXT("control-pose-current-local"),
 					ExportTransformProperty(Hierarchy->GetLocalTransform(Key, false)));
 				Element.Properties.Add(TEXT("control-pose-current-global"),
@@ -1234,11 +1236,11 @@ FRigLangExportResult FRigLangExporter::Export(
 				Element.Properties.Add(TEXT("control-pose-initial-global"),
 					ExportTransformProperty(Hierarchy->GetGlobalTransform(Key, true)));
 				Element.Properties.Add(TEXT("control-offset-current-local"), ExportTransformProperty(
-					Control->GetOffsetTransform()[ERigTransformType::CurrentLocal].Get()));
+					RigLangEngineCompat::ControlOffset(Hierarchy, Control, ERigTransformType::CurrentLocal)));
 				Element.Properties.Add(TEXT("control-offset-current-global"), ExportTransformProperty(
 					Hierarchy->GetGlobalControlOffsetTransform(Key, false)));
 				Element.Properties.Add(TEXT("control-offset-initial-local"), ExportTransformProperty(
-					Control->GetOffsetTransform()[ERigTransformType::InitialLocal].Get()));
+					RigLangEngineCompat::ControlOffset(Hierarchy, Control, ERigTransformType::InitialLocal)));
 				Element.Properties.Add(TEXT("control-offset-initial-global"), ExportTransformProperty(
 					Hierarchy->GetGlobalControlOffsetTransform(Key, true)));
 				Element.Properties.Add(TEXT("control-shape-current-local"), ExportTransformProperty(
@@ -1259,9 +1261,9 @@ FRigLangExportResult FRigLangExporter::Export(
 				AddHierarchyTransform(Element, ERigHierarchyTransformRole::PoseCurrentGlobal, Hierarchy->GetGlobalTransform(Key, false));
 				AddHierarchyTransform(Element, ERigHierarchyTransformRole::PoseInitialLocal, Hierarchy->GetLocalTransform(Key, true));
 				AddHierarchyTransform(Element, ERigHierarchyTransformRole::PoseInitialGlobal, Hierarchy->GetGlobalTransform(Key, true));
-				AddHierarchyTransform(Element, ERigHierarchyTransformRole::OffsetCurrentLocal, Control->GetOffsetTransform()[ERigTransformType::CurrentLocal].Get());
+				AddHierarchyTransform(Element, ERigHierarchyTransformRole::OffsetCurrentLocal, RigLangEngineCompat::ControlOffset(Hierarchy, Control, ERigTransformType::CurrentLocal));
 				AddHierarchyTransform(Element, ERigHierarchyTransformRole::OffsetCurrentGlobal, Hierarchy->GetGlobalControlOffsetTransform(Key, false));
-				AddHierarchyTransform(Element, ERigHierarchyTransformRole::OffsetInitialLocal, Control->GetOffsetTransform()[ERigTransformType::InitialLocal].Get());
+				AddHierarchyTransform(Element, ERigHierarchyTransformRole::OffsetInitialLocal, RigLangEngineCompat::ControlOffset(Hierarchy, Control, ERigTransformType::InitialLocal));
 				AddHierarchyTransform(Element, ERigHierarchyTransformRole::OffsetInitialGlobal, Hierarchy->GetGlobalControlOffsetTransform(Key, true));
 				AddHierarchyTransform(Element, ERigHierarchyTransformRole::ShapeCurrentLocal, Hierarchy->GetLocalControlShapeTransform(Key, false));
 				AddHierarchyTransform(Element, ERigHierarchyTransformRole::ShapeCurrentGlobal, Hierarchy->GetGlobalControlShapeTransform(Key, false));
@@ -1504,8 +1506,8 @@ FRigLangExportResult FRigLangExporter::Export(
 			for (const TPair<FRigVMGraphFunctionIdentifier, uint32>& Pair : LibraryNode->GetDependencies())
 			{
 				FRigFunctionDependencyAST& Dependency = Function.Dependencies.AddDefaulted_GetRef();
-				Dependency.HostObject = Pair.Key.HostObject.ToString();
-				Dependency.LibraryNodePath = Pair.Key.GetLibraryNodePath();
+				Dependency.HostObject = RigLangEngineCompat::FunctionHostPath(Pair.Key);
+				Dependency.LibraryNodePath = RigLangEngineCompat::FunctionLibraryNodePath(Pair.Key);
 				Dependency.Hash = Pair.Value;
 			}
 			Function.Dependencies.Sort([](const FRigFunctionDependencyAST& A, const FRigFunctionDependencyAST& B)

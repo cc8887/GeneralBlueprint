@@ -9,13 +9,13 @@ GeneralBlueprint 将 BlueprintLisp、AnimBP2FP、MatBP2FP 和 BlueprintAutoLayou
 3. 在 **Edit > Plugins** 中启用 GeneralBlueprint，并按提示重启。使用源码编译时需安装该引擎版本对应的 C++ 工具链。
 4. 插件会启用引擎的 Control Rig。以下 Python 示例还需启用 **Python Editor Script Plugin**。
 
-当前 UE 5.8 源码可生成含五个 MCP 模块的插件，提供八个 toolset、36 个工具，覆盖蓝图、动画/Rig、材质、布局与属性高亮。使用 `Scripts/Stage-Ue58Plugin.ps1` 准备源码安装，或单独安装 `MCP` 中的可选伴随插件，详见 [MCP 接入与工具清单](UEMCP.zh-CN.md)。历史已发布 UE 5.8 ZIP 仍含原来的三个适配模块。MCP 依赖引擎内的 **Toolset Registry** 和 **Unreal MCP / ModelContextProtocol**；两者属于实验性功能。其他版本包不含 MCP。安装 GeneralBlueprint 不会自动启动 MCP 服务器。
+当前 UE 5.8/5.9 源码及 UE 5.9 发布包包含五个 MCP 模块，提供八个 toolset、36 个工具，覆盖蓝图、动画/Rig、材质、布局与属性高亮。两个版本均可使用 `Scripts/Stage-Ue58Plugin.ps1` 准备源码安装，或单独安装 `MCP` 中的可选伴随插件，详见 [MCP 接入与工具清单](UEMCP.zh-CN.md)。历史发布 ZIP 保留其原有内容。MCP 依赖引擎内的 **Toolset Registry** 和 **Unreal MCP / ModelContextProtocol**；两者属于实验性功能。UE 4.26–5.7 包不含 MCP。安装 GeneralBlueprint 不会自动启动 MCP 服务器。
 
 导入 DSL 前请备份项目和资产。卸载旧的 BlueprintLisp、AnimBP2FP、MatBP2FP、BlueprintAutoLayout 独立插件，避免模块重名。
 
 ## 版本边界
 
-[兼容表](Compatibility.md)记录的是构建和打包结果，不代表所有图类型均已通过功能测试。四项主功能在各版本包中均有模块；Animation Blueprint **导入从 UE 5.1 开始**，UE 4.26、4.27、5.0 的动画工作流范围较窄。仅 UE 5.8 包包含 MCP。不同引擎版本之间不要混用二进制或 `Intermediate` 文件。
+[兼容表](Compatibility.md)记录的是构建和打包结果，不代表所有图类型均已通过功能测试。四项主功能在各版本包中均有模块；Animation Blueprint **导入从 UE 5.1 开始**，UE 4.26、4.27、5.0 的动画工作流范围较窄。UE 5.8 和 5.9 包包含 MCP。不同引擎版本之间不要混用二进制或 `Intermediate` 文件。
 
 ## BlueprintLisp：蓝图图转 DSL
 

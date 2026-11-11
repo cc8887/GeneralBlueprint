@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "AnimBP2FPVersionCompat.h"
+#include "RigLangEngineCompat.h"
 #if ANIMBP2FP_HAS_MODERN_RIGVM_AUTHORING
 #include "Misc/AutomationTest.h"
 
@@ -479,6 +480,7 @@ bool FRigLangExporterSyntheticTest::RunTest(const FString& Parameters)
 			FRigElementKey(TEXT("FootControl"), ERigElementType::Control));
 		if (TestNotNull(TEXT("Synthetic source control exists"), SourceControl))
 		{
+			const FRigControlSettings SourceSettings = RigLangEngineCompat::ControlSettings(Blueprint->GetHierarchy(), SourceControl);
 			const FRigHierarchyStateAST* SettingsState = Control->States.FindByPredicate([](const FRigHierarchyStateAST& State)
 			{
 				return State.Kind == ERigHierarchyStateKind::ControlSettings;
@@ -487,7 +489,7 @@ bool FRigLangExporterSyntheticTest::RunTest(const FString& Parameters)
 			{
 				TestEqual(TEXT("Typed control type is exact"), SettingsState->Type, TEXT("Float"));
 				TestEqual(TEXT("Complete typed control settings export"), SettingsState->SerializedValue,
-					RigLangExporterTests::ExportStruct(FRigControlSettings::StaticStruct(), &SourceControl->Settings));
+					RigLangExporterTests::ExportStruct(FRigControlSettings::StaticStruct(), &SourceSettings));
 			}
 		}
 		TestEqual(TEXT("Typed parent constraint count"), Control->Parents.Num(), 2);
@@ -527,7 +529,7 @@ bool FRigLangExporterSyntheticTest::RunTest(const FString& Parameters)
 			if (TestNotNull(Label, Transform)) TestTrue(Label, Transform->Value.Equals(Expected, 0.0));
 		};
 		TestTypedTransform(TEXT("Current local control offset reconstructs exactly"), ERigHierarchyTransformRole::OffsetCurrentLocal,
-			SourceControl->GetOffsetTransform()[ERigTransformType::CurrentLocal].Get());
+			RigLangEngineCompat::ControlOffset(Blueprint->GetHierarchy(), SourceControl, ERigTransformType::CurrentLocal));
 		TestTypedTransform(TEXT("Initial global control shape reconstructs exactly"), ERigHierarchyTransformRole::ShapeInitialGlobal,
 			Blueprint->GetHierarchy()->GetGlobalControlShapeTransform(ControlKey, true));
 		for (const TPair<FString, FVector> Expected : { TPair<FString, FVector>(TEXT("current"), SourceControl->PreferredEulerAngles.Current), TPair<FString, FVector>(TEXT("initial"), SourceControl->PreferredEulerAngles.Initial) })
@@ -663,8 +665,11 @@ bool FRigLangExporterSyntheticTest::RunTest(const FString& Parameters)
 				const FRigControlElement* SourceRoundTripControl = Blueprint->GetHierarchy()->Find<FRigControlElement>(
 					FRigElementKey(TEXT("FootControl"), ERigElementType::Control));
 				if (SourceRoundTripControl)
+				{
+					const FRigControlSettings SourceSettings = RigLangEngineCompat::ControlSettings(Blueprint->GetHierarchy(), SourceRoundTripControl);
 					TestTrue(TEXT("Parsed typed control settings are structurally exact"),
-						SettingsStruct->CompareScriptStruct(&ReconstructedSettings, &SourceRoundTripControl->Settings, PPF_None));
+						SettingsStruct->CompareScriptStruct(&ReconstructedSettings, &SourceSettings, PPF_None));
+				}
 			}
 		}
 	}
@@ -1071,8 +1076,8 @@ bool FRigLangExporterRealAssetTest::RunTest(const FString& Parameters)
 		if (!LibraryNode || !LibraryNode->GetContainedGraph()) continue;
 		const FRigVMGraphFunctionHeader Header = LibraryNode->GetFunctionHeader();
 		FRigFunctionIdentifierAST ExpectedIdentifier;
-		ExpectedIdentifier.HostObject = Header.LibraryPointer.HostObject.ToString();
-		ExpectedIdentifier.LibraryNodePath = Header.LibraryPointer.GetLibraryNodePath();
+		ExpectedIdentifier.HostObject = RigLangEngineCompat::FunctionHostPath(Header.LibraryPointer);
+		ExpectedIdentifier.LibraryNodePath = RigLangEngineCompat::FunctionLibraryNodePath(Header.LibraryPointer);
 		const FString StableId = ExpectedIdentifier.ToStableId();
 		const FRigFunctionAST* Function = First.Module->Functions.FindByPredicate(
 			[&StableId](const FRigFunctionAST& Candidate) { return Candidate.StableId == StableId; });
@@ -1129,8 +1134,8 @@ bool FRigLangExporterRealAssetTest::RunTest(const FString& Parameters)
 		for (const TPair<FRigVMGraphFunctionIdentifier, uint32>& Pair : LibraryNode->GetDependencies())
 		{
 			FRigFunctionDependencyAST& Dependency = ExpectedDependencies.AddDefaulted_GetRef();
-			Dependency.HostObject = Pair.Key.HostObject.ToString();
-			Dependency.LibraryNodePath = Pair.Key.GetLibraryNodePath();
+			Dependency.HostObject = RigLangEngineCompat::FunctionHostPath(Pair.Key);
+			Dependency.LibraryNodePath = RigLangEngineCompat::FunctionLibraryNodePath(Pair.Key);
 			Dependency.Hash = Pair.Value;
 		}
 		ExpectedDependencies.Sort([](const FRigFunctionDependencyAST& A, const FRigFunctionDependencyAST& B)
@@ -1214,8 +1219,8 @@ bool FRigLangExporterRealAssetTest::RunTest(const FString& Parameters)
 			TestEqual(TEXT("Typed initial location weight is exact"), TypedParent.InitialWeight.Location, static_cast<double>(SourceInitialWeight.Location));
 			TestEqual(TEXT("Typed initial rotation weight is exact"), TypedParent.InitialWeight.Rotation, static_cast<double>(SourceInitialWeight.Rotation));
 			TestEqual(TEXT("Typed initial scale weight is exact"), TypedParent.InitialWeight.Scale, static_cast<double>(SourceInitialWeight.Scale));
-			if (SourceMultiParent && SourceMultiParent->ParentConstraints.IsValidIndex(ParentIndex))
-				TestEqual(TEXT("Typed parent label is exact"), TypedParent.Label, SourceMultiParent->ParentConstraints[ParentIndex].DisplayLabel.ToString());
+			if (SourceMultiParent)
+				TestEqual(TEXT("Typed parent label is exact"), TypedParent.Label, RigLangEngineCompat::ParentLabel(SourceHierarchy, SourceMultiParent, ParentIndex));
 		}
 		auto TestTypedTransform = [this, ExportedElement](const TCHAR* Label, ERigHierarchyTransformRole Role, const FTransform& Expected)
 		{
@@ -1264,17 +1269,18 @@ bool FRigLangExporterRealAssetTest::RunTest(const FString& Parameters)
 		}
 		if (const FRigControlElement* SourceControl = Blueprint->GetHierarchy()->Find<FRigControlElement>(SourceKey))
 		{
+			const FRigControlSettings SourceSettings = RigLangEngineCompat::ControlSettings(Blueprint->GetHierarchy(), SourceControl);
 			const FRigHierarchyStateAST* Settings = ExportedElement->States.FindByPredicate([](const FRigHierarchyStateAST& State){return State.Kind==ERigHierarchyStateKind::ControlSettings;});
 			if (TestNotNull(TEXT("Typed control settings state exists"), Settings))
 			{
 				TestEqual(TEXT("Typed control type is exact"), Settings->Type,
-					StaticEnum<ERigControlType>()->GetNameStringByValue(static_cast<int64>(SourceControl->Settings.ControlType)));
+					StaticEnum<ERigControlType>()->GetNameStringByValue(static_cast<int64>(SourceSettings.ControlType)));
 				TestEqual(TEXT("Typed complete control settings are exact"), Settings->SerializedValue,
-					RigLangExporterTests::ExportStruct(FRigControlSettings::StaticStruct(), &SourceControl->Settings));
+					RigLangExporterTests::ExportStruct(FRigControlSettings::StaticStruct(), &SourceSettings));
 			}
-			TestTypedTransform(TEXT("Typed offset initial local is exact"), ERigHierarchyTransformRole::OffsetInitialLocal, SourceControl->GetOffsetTransform()[ERigTransformType::InitialLocal].Get());
+			TestTypedTransform(TEXT("Typed offset initial local is exact"), ERigHierarchyTransformRole::OffsetInitialLocal, RigLangEngineCompat::ControlOffset(Blueprint->GetHierarchy(), SourceControl, ERigTransformType::InitialLocal));
 			TestTypedTransform(TEXT("Typed offset initial global is exact"), ERigHierarchyTransformRole::OffsetInitialGlobal, Blueprint->GetHierarchy()->GetGlobalControlOffsetTransform(SourceKey, true));
-			TestTypedTransform(TEXT("Typed offset current local is exact"), ERigHierarchyTransformRole::OffsetCurrentLocal, SourceControl->GetOffsetTransform()[ERigTransformType::CurrentLocal].Get());
+			TestTypedTransform(TEXT("Typed offset current local is exact"), ERigHierarchyTransformRole::OffsetCurrentLocal, RigLangEngineCompat::ControlOffset(Blueprint->GetHierarchy(), SourceControl, ERigTransformType::CurrentLocal));
 			TestTypedTransform(TEXT("Typed offset current global is exact"), ERigHierarchyTransformRole::OffsetCurrentGlobal, Blueprint->GetHierarchy()->GetGlobalControlOffsetTransform(SourceKey, false));
 			TestTypedTransform(TEXT("Typed shape initial local is exact"), ERigHierarchyTransformRole::ShapeInitialLocal, Blueprint->GetHierarchy()->GetLocalControlShapeTransform(SourceKey, true));
 			TestTypedTransform(TEXT("Typed shape initial global is exact"), ERigHierarchyTransformRole::ShapeInitialGlobal, Blueprint->GetHierarchy()->GetGlobalControlShapeTransform(SourceKey, true));
@@ -1306,14 +1312,14 @@ bool FRigLangExporterRealAssetTest::RunTest(const FString& Parameters)
 				else Fields.Add(LexToString(State.NumberValue));
 				return TEXT("(") + State.Type + (Fields.Num() == 0 ? FString() : TEXT(" ") + FString::Join(Fields, TEXT(" "))) + TEXT(")");
 			};
-			auto TestControlValue = [this, ExportedElement, SourceControl, &StateValueText, Blueprint, SourceKey](const TCHAR* Label, const FString& Role, ERigControlValueType ValueType)
+			auto TestControlValue = [this, ExportedElement, SourceSettings, &StateValueText, Blueprint, SourceKey](const TCHAR* Label, const FString& Role, ERigControlValueType ValueType)
 			{
 				const FRigHierarchyStateAST* State = ExportedElement->States.FindByPredicate([&Role](const FRigHierarchyStateAST& Candidate)
 				{
 					return Candidate.Kind == ERigHierarchyStateKind::ControlValue && Candidate.Role == Role;
 				});
 				if (TestNotNull(Label, State)) TestEqual(Label, StateValueText(*State), RigLangExporterTests::ExportTypedControlValue(
-					Blueprint->GetHierarchy()->GetControlValue(SourceKey, ValueType), SourceControl->Settings.ControlType));
+					Blueprint->GetHierarchy()->GetControlValue(SourceKey, ValueType), SourceSettings.ControlType));
 			};
 			TestControlValue(TEXT("Typed current control value is exact"), TEXT("current"), ERigControlValueType::Current);
 			TestControlValue(TEXT("Typed initial control value is exact"), TEXT("initial"), ERigControlValueType::Initial);
@@ -1650,10 +1656,10 @@ bool FRigLangExporterRealAssetTest::RunTest(const FString& Parameters)
 				const FRigVMGraphFunctionHeader Header = FunctionNode->GetReferencedFunctionHeader();
 				TestEqual(TEXT("Function reference host reconstructs exactly"),
 					ExportedNode->FunctionIdentifier.HostObject,
-					Header.LibraryPointer.HostObject.ToString());
+					RigLangEngineCompat::FunctionHostPath(Header.LibraryPointer));
 				TestEqual(TEXT("Function reference path reconstructs exactly"),
 					ExportedNode->FunctionIdentifier.LibraryNodePath,
-					Header.LibraryPointer.GetLibraryNodePath());
+					RigLangEngineCompat::FunctionLibraryNodePath(Header.LibraryPointer));
 				TestEqual(TEXT("Function reference remap requirement reconstructs exactly"),
 					ExportedNode->Properties.FindRef(TEXT("requires-variable-remapping")),
 					FunctionNode->RequiresVariableRemapping() ? FString(TEXT("true")) : FString(TEXT("false")));
@@ -1749,13 +1755,13 @@ bool FRigLangExporterRealAssetTest::RunTest(const FString& Parameters)
 			{
 				const FRigVMGraphFunctionHeader Header = FunctionNode->GetReferencedFunctionHeader();
 				FRigFunctionIdentifierAST IdentifierAST;
-				IdentifierAST.HostObject = Header.LibraryPointer.HostObject.ToString();
-				IdentifierAST.LibraryNodePath = Header.LibraryPointer.GetLibraryNodePath();
+				IdentifierAST.HostObject = RigLangEngineCompat::FunctionHostPath(Header.LibraryPointer);
+				IdentifierAST.LibraryNodePath = RigLangEngineCompat::FunctionLibraryNodePath(Header.LibraryPointer);
 				const FString Identifier = IdentifierAST.ToStableId();
 				ExpectedFunctionReferences.Add(Identifier);
 				++SourceFunctionReferenceCounts.FindOrAdd(
-					Header.LibraryPointer.HostObject.ToString() + TEXT("|")
-					+ Header.LibraryPointer.GetLibraryNodePath());
+					RigLangEngineCompat::FunctionHostPath(Header.LibraryPointer) + TEXT("|")
+					+ RigLangEngineCompat::FunctionLibraryNodePath(Header.LibraryPointer));
 				if (const FRigNodeAST* const* ExportedNode = ExportedFunctionReferences.Find(Identifier))
 				{
 					TestEqual(TEXT("Function reference uses the declaration-compatible readable symbol"),

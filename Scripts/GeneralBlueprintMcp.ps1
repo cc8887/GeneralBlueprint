@@ -1,4 +1,4 @@
-# Shared by source staging and release packaging. Keep UE 5.8 reflected source
+# Shared by source staging and release packaging. Keep UE 5.8/5.9 reflected source
 # outside the base plugin's Source directory for older-engine compatibility.
 function Add-GeneralBlueprintMcp {
     [CmdletBinding()]

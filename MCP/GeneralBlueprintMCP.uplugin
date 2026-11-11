@@ -1,8 +1,8 @@
 {
   "FileVersion": 3,
-  "Version": 2,
-  "VersionName": "1.1.0-beta.1",
-  "FriendlyName": "GeneralBlueprint MCP (UE 5.8)",
+  "Version": 3,
+  "VersionName": "1.2.0-beta.1",
+  "FriendlyName": "GeneralBlueprint MCP (UE 5.8/5.9)",
   "Description": "Native Unreal MCP toolsets for GeneralBlueprint. Install beside GeneralBlueprint, or use Scripts/Stage-Ue58Plugin.ps1 to combine them.",
   "Category": "Editor",
   "CreatedBy": "cc8887",

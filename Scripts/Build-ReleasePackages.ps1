@@ -3,11 +3,13 @@ param(
     [Parameter(Mandatory = $true)]
     [hashtable]$EngineRoots,
 
-    [string[]]$Versions = @('4.26', '4.27', '5.0', '5.1', '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8'),
+    [string[]]$Versions = @('4.26', '4.27', '5.0', '5.1', '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8', '5.9'),
 
     [string]$PluginRoot = (Split-Path -Parent $PSScriptRoot),
 
     [string]$OutputRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'Releases'),
+
+    [string]$BuildWorkRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) '.buildwork'),
 
     [switch]$KeepWork
 )
@@ -15,8 +17,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $PluginRoot = [IO.Path]::GetFullPath($PluginRoot)
 $OutputRoot = [IO.Path]::GetFullPath($OutputRoot)
+$BuildWorkRoot = [IO.Path]::GetFullPath($BuildWorkRoot)
 $results = New-Object 'System.Collections.Generic.List[object]'
-$allVersions = @('4.26', '4.27', '5.0', '5.1', '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8')
+$allVersions = @('4.26', '4.27', '5.0', '5.1', '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8', '5.9')
 . (Join-Path $PSScriptRoot 'GeneralBlueprintMcp.ps1')
 
 if (-not (Test-Path -LiteralPath (Join-Path $PluginRoot 'GeneralBlueprint.uplugin'))) {
@@ -83,7 +86,7 @@ foreach ($version in $Versions) {
             throw "Package already exists; move it aside before rebuilding: $zipPath"
         }
 
-        $workRoot = Join-Path $PluginRoot (".buildwork\UE_$version-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $workRoot = Join-Path $BuildWorkRoot ("UE_$version-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
         $stageRoot = Join-Path $workRoot 'Plugin'
         $packageRoot = Join-Path $workRoot 'Package\GeneralBlueprint'
         New-Item -ItemType Directory -Path $workRoot,$stageRoot | Out-Null
@@ -98,13 +101,15 @@ foreach ($version in $Versions) {
             (Join-Path $PluginRoot 'Releases'),
             (Join-Path $PluginRoot 'Dev'),
             (Join-Path $PluginRoot '.buildwork'),
+            $BuildWorkRoot,
+            $OutputRoot,
             (Join-Path $PluginRoot 'MCP')
         )
         $copyArgs = @($PluginRoot, $stageRoot, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/XD') + $excluded + @('/XF', '.gitignore')
         & robocopy @copyArgs | Out-Null
         if ($LASTEXITCODE -ge 8) { throw "Plugin staging copy failed with robocopy exit code $LASTEXITCODE." }
 
-        if ($version -eq '5.8') {
+        if ($version -in @('5.8', '5.9')) {
             Add-GeneralBlueprintMcp -PluginRoot $PluginRoot -Destination $stageRoot
         }
 
@@ -166,6 +171,8 @@ foreach ($version in $Versions) {
             'Docs\UserGuide.txt',
             'Docs\UserGuide.zh-CN.md'
             'Docs\UEMCP.zh-CN.md'
+            'Docs\BlueprintLispSemanticFidelity.md'
+            'Docs\DelegateBroadcasts.md'
         )
         foreach ($relativePath in $requiredReleaseFiles) {
             $stagedFile = Join-Path $stageRoot $relativePath
@@ -201,9 +208,9 @@ foreach ($version in $Versions) {
 
         if (-not $KeepWork) {
             $resolvedWork = [IO.Path]::GetFullPath($workRoot)
-            $workBase = [IO.Path]::GetFullPath((Join-Path $PluginRoot '.buildwork'))
+            $workBase = $BuildWorkRoot
             if (-not $resolvedWork.StartsWith(($workBase + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)) {
-                throw "Refusing to clean work path outside .buildwork: $resolvedWork"
+                throw "Refusing to clean work path outside BuildWorkRoot: $resolvedWork"
             }
             Remove-Item -LiteralPath $resolvedWork -Recurse -Force
         }

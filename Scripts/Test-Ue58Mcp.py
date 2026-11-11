@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Independent stdlib HTTP client for UE 5.8 native MCP acceptance.
+"""Independent stdlib HTTP client for UE 5.8/5.9 native MCP acceptance.
 
 Run with a staged GeneralBlueprint editor host and ModelContextProtocol.StartServer.
 Evidence contains the actual JSON-RPC messages; no configured external MCP servers
@@ -183,7 +183,9 @@ def run(client, plugin_root, exercise_assets, exercise_persistence=False, verify
     client.rpc("notifications/initialized", notification=True)
     listed = client.rpc("tools/list", {})
     names = {item["name"] for item in listed.get("tools", [])}
-    client.check({"list_toolsets", "describe_toolset", "call_tool"} <= names,
+    batch_describe = "describe_toolsets" in names
+    describe_name = "describe_toolsets" if batch_describe else "describe_toolset"
+    client.check({"list_toolsets", describe_name, "call_tool"} <= names,
                  "UE native tool-search meta-tools are advertised")
     catalog = decode_result(client.tool("list_toolsets"))
     client.check(isinstance(catalog, str), "list_toolsets returns the native textual catalog")
@@ -193,7 +195,15 @@ def run(client, plugin_root, exercise_assets, exercise_persistence=False, verify
         matches = [name for name in catalog_names if name.rsplit(".", 1)[-1] == class_name]
         client.check(len(matches) == 1, f"{class_name} has one registered native toolset")
         toolsets[class_name] = matches[0]
-        schema = decode_result(client.tool("describe_toolset", {"toolset_name": matches[0]}))
+        if batch_describe:
+            described = decode_result(client.tool("describe_toolsets", {
+                "toolset_names": [matches[0]], "include_schemas": True,
+            }))
+            client.check(isinstance(described, dict) and not described.get("errors"),
+                         f"{class_name} batch description has no errors")
+            schema = described.get("toolsets", {}).get(matches[0])
+        else:
+            schema = decode_result(client.tool("describe_toolset", {"toolset_name": matches[0]}))
         client.check(isinstance(schema, dict), f"{class_name} describes valid JSON")
         tools = schema.get("tools", [])
         observed = {tool["name"].rsplit(".", 1)[-1] for tool in tools}
